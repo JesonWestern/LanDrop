@@ -1,0 +1,37 @@
+# ============================================================
+# LanDrop 仓库忽略规则
+# 注意：win/build/ 里混放了必须入库的 build.bat / package.bat，
+#       所以只能按子目录忽略，不能整目录忽略。
+# ============================================================
+
+# --- e2e 测试工作区（tools/e2e_test.py 每次运行都会重建） ---
+/build/
+
+# --- Android 构建产物与本地缓存 ---
+/android/app/build/
+/android/.gradle/
+/android/.kotlin/
+*.apk
+*.aab
+*.class
+
+# --- Windows 构建产物（保留 win/build 下的 .bat） ---
+/win/build/out/
+/win/build/_tmp/
+/win/dist/
+
+# --- IDE / 本机配置 ---
+.idea/
+*.iml
+/android/local.properties
+.cxx/
+
+# --- 开发期截图与临时文件 ---
+/android/*.png
+*.log
+*.stackdump
+Thumbs.db
+.DS_Store
+
+# --- 本机 AI 会话数据 ---
+/.workbuddy/
