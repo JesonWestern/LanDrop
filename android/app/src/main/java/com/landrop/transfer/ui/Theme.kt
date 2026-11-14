@@ -29,6 +29,10 @@ object LdColors {
     val Green = Color(0xFF57C98A)
     val Red = Color(0xFFE5645F)
     val Amber = Color(0xFFE2B34D)
+    // 文件类型附加色（图标用）
+    val Purple = Color(0xFF9B7BF0)
+    val Orange = Color(0xFFE0904F)
+    val Cyan = Color(0xFF4FC1D9)
 }
 
 private val LanDropScheme = darkColorScheme(

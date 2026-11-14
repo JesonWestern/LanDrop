@@ -62,7 +62,12 @@ data class FileItem(
     val size: Long,
     val mtime: Long,
     val childInfo: String = "",
-)
+    val mime: String = "",
+) {
+    /** 目录没有文件类型；文件按扩展名（mime 兜底）判定。 */
+    val kind: FileKind
+        get() = if (isDir) FileKind.OTHER else FileKind.of(name, mime.ifEmpty { null })
+}
 
 data class SpeedUi(
     val running: Boolean = false,

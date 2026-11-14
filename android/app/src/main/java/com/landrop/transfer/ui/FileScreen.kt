@@ -161,6 +161,8 @@ fun FileScreen(devices: List<DeviceInfo>, onNeedDevice: () -> Unit) {
         Breadcrumb(root = root, cur = curDir, onGo = { curDir = it })
 
         Box(Modifier.weight(1f)) {
+            val dirs = items.filter { it.isDir }
+            val files = items.filter { !it.isDir }
             LazyColumn(Modifier.fillMaxSize()) {
                 if (curDir.absolutePath == root.absolutePath && recent.isNotEmpty()) {
                     item {
@@ -174,7 +176,6 @@ fun FileScreen(devices: List<DeviceInfo>, onNeedDevice: () -> Unit) {
                             onOpen = { },
                         )
                     }
-                    item { SectionHeader("文件夹") }
                 }
                 if (items.isEmpty()) {
                     item {
@@ -188,15 +189,27 @@ fun FileScreen(devices: List<DeviceInfo>, onNeedDevice: () -> Unit) {
                         }
                     }
                 }
-                items(items, key = { it.path }) { f ->
-                    FileRow(
-                        item = f,
-                        checked = selected.contains(f.path),
-                        onToggle = { selected = toggle(selected, f.path) },
-                        onOpen = {
-                            if (f.isDir) curDir = File(f.path)
-                        },
-                    )
+                if (dirs.isNotEmpty()) {
+                    item { SectionHeader("文件夹") }
+                    items(dirs, key = { it.path }) { f ->
+                        FileRow(
+                            item = f,
+                            checked = selected.contains(f.path),
+                            onToggle = { selected = toggle(selected, f.path) },
+                            onOpen = { curDir = File(f.path) },
+                        )
+                    }
+                }
+                if (files.isNotEmpty()) {
+                    item { SectionHeader("文件") }
+                    items(files, key = { it.path }) { f ->
+                        FileRow(
+                            item = f,
+                            checked = selected.contains(f.path),
+                            onToggle = { selected = toggle(selected, f.path) },
+                            onOpen = { },
+                        )
+                    }
                 }
                 item { Spacer(Modifier.height(16.dp)) }
             }
@@ -204,8 +217,11 @@ fun FileScreen(devices: List<DeviceInfo>, onNeedDevice: () -> Unit) {
 
         // 底部发送条
         if (selected.isNotEmpty()) {
-            val totalBytes = items.filter { selected.contains(it.path) && !it.isDir }
-                .sumOf { it.size } + recent.filter { selected.contains(it.path) }.sumOf { it.size }
+            val totalBytes = (items + recent)
+                .associateBy { it.path }
+                .let { byPath -> selected.mapNotNull { byPath[it] } }
+                .filter { !it.isDir }
+                .sumOf { it.size }
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -309,8 +325,9 @@ private fun FileRow(
     ) {
         FileGlyph(
             isDir = item.isDir,
-            tint = if (item.isDir) LdColors.Accent else LdColors.TextDim,
+            tint = if (item.isDir) LdColors.Accent else kindColor(item.kind),
             modifier = Modifier.size(22.dp),
+            kind = item.kind,
         )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
