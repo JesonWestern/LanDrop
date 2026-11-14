@@ -8,6 +8,7 @@
 /build/
 
 # --- Android 构建产物与本地缓存 ---
+/android/build/
 /android/app/build/
 /android/.gradle/
 /android/.kotlin/
