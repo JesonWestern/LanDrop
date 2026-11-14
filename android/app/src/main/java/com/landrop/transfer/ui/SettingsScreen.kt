@@ -227,10 +227,10 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
         }
 
         Section("关于") {
-            Text("内网快传 LanDrop 1.0.0", color = LdColors.Text, fontSize = 13.sp)
+            Text("内网快传 LanDrop 1.1.0", color = LdColors.Text, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Windows ⇄ Android 局域网文件互传与网速测试。\n" +
+                "Windows ⇄ Android / Android ⇄ Android 局域网文件互传与网速测试。\n" +
                     "零配置发现 · 文件夹传输 · 断点续传 · 不经过任何服务器。\n\n" +
                     "协议 v1 · 发现 UDP 47820 · 传输 TCP 47821",
                 color = LdColors.TextFaint,

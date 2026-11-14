@@ -73,7 +73,7 @@ class Discovery(
         o.put("name", selfName)
         o.put("plat", "android")
         o.put("port", selfPort)
-        o.put("ver", "1.0.0")
+        o.put("ver", com.landrop.transfer.BuildConfig.VERSION_NAME)
         o.put("caps", org.json.JSONArray().put("file").put("folder").put("resume").put("speed"))
         return o.toString().toByteArray(Charsets.UTF_8)
     }

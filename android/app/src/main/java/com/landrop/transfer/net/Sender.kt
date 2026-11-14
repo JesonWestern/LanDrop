@@ -373,7 +373,7 @@ class Sender(
         o.put("id", settings.deviceId)
         o.put("name", settings.deviceName)
         o.put("plat", "android")
-        o.put("ver", "1.1.0")
+        o.put("ver", com.landrop.transfer.BuildConfig.VERSION_NAME)
         o.put("caps", JSONArray().put("file").put("folder").put("resume").put("speed"))
         if (kind == "data") {
             o.put("job", token)
