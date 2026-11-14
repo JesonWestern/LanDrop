@@ -53,6 +53,10 @@ data class JobUi(
             totalBytes <= 0L -> if (state == JobState.DONE) 1f else 0f
             else -> (doneBytes.toDouble() / totalBytes).coerceIn(0.0, 1.0).toFloat()
         }
+
+    /** 发送任务失败/暂停时可以重试；接收任务只能等对方重试。 */
+    val canRetry: Boolean
+        get() = dir == JobDir.SEND && (state == JobState.FAILED || state == JobState.PAUSED)
 }
 
 data class FileItem(

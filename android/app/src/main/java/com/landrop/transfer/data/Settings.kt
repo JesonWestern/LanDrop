@@ -22,7 +22,7 @@ class Settings(context: Context) {
         set(v) = sp.edit().putString("deviceName", v).apply()
 
     var dataConns: Int
-        get() = sp.getInt("dataConns", 2).coerceIn(1, 8)
+        get() = sp.getInt("dataConns", 3).coerceIn(1, 8)
         set(v) = sp.edit().putInt("dataConns", v.coerceIn(1, 8)).apply()
 
     var speedConns: Int

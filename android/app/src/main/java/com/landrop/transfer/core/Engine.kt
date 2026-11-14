@@ -1,6 +1,8 @@
 package com.landrop.transfer.core
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.util.Log
 import com.landrop.transfer.data.HistoryRec
 import com.landrop.transfer.data.HistoryStore
@@ -12,10 +14,12 @@ import com.landrop.transfer.model.JobState
 import com.landrop.transfer.model.JobUi
 import com.landrop.transfer.model.SpeedUi
 import com.landrop.transfer.net.Discovery
+import com.landrop.transfer.net.NetLocks
 import com.landrop.transfer.net.Proto
 import com.landrop.transfer.net.ReceiverServer
 import com.landrop.transfer.net.Sender
 import com.landrop.transfer.net.Speed
+import com.landrop.transfer.storage.DownloadSink
 import com.landrop.transfer.storage.FileWalk
 import com.landrop.transfer.util.JobIds
 import kotlinx.coroutines.CoroutineScope
@@ -59,6 +63,10 @@ object Engine {
 
     private val sendLock = Any()
 
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var firstNetEvent = true
+    @Volatile private var netLocked = false
+
     /** 等待开工的发送任务（单设备串行、跨设备并发上限见 [MAX_PARALLEL_SENDS]）。 */
     private val sendQueue = ArrayDeque<Job>()
 
@@ -97,7 +105,7 @@ object Engine {
             if (selectedId == null) selectedId = dev.id
         }.also { it.start() }
 
-        server = ReceiverServer(
+        val srv = ReceiverServer(
             context = ctx,
             settings = settings,
             onNewJob = { job ->
@@ -106,14 +114,59 @@ object Engine {
             },
             onUpdate = { pushJobs() },
             autoAcceptAll = { autoAcceptAll },
-        ).also { it.start() }
+        )
+        server = srv
 
-        serverListening = true
+        // 端口被占用时不能再假装已监听（否则设置页永远显示绿色）
+        serverListening = srv.start()
+        if (!serverListening) Log.w(TAG, "接收端口 ${Proto.TRANSFER_PORT} 监听失败")
+
         running = true
-        Log.i(TAG, "started")
+        Log.i(TAG, "started listening=$serverListening")
+
+        // WiFi 换网/切回后必须重建广播 socket，否则会出现「别人能发现我，我发现不了别人」
+        registerNetworkWatch()
+
+        // 清理上次遗留的接收临时目录（失败/放弃的任务不会自动清）
+        scope.launch(Dispatchers.IO) { runCatching { DownloadSink.gcIncoming(ctx) } }
+    }
+
+    private fun registerNetworkWatch() {
+        if (netCallback != null) return
+        runCatching {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    if (firstNetEvent) {
+                        firstNetEvent = false
+                        return
+                    }
+                    Log.i(TAG, "network available -> rebuild discovery")
+                    discovery?.rebuild()
+                }
+
+                override fun onLost(network: Network) {
+                    Log.i(TAG, "network lost -> rebuild discovery")
+                    discovery?.rebuild()
+                }
+            }
+            cm.registerDefaultNetworkCallback(cb)
+            netCallback = cb
+        }.onFailure { Log.w(TAG, "network callback: ${it.message}") }
+    }
+
+    private fun unregisterNetworkWatch() {
+        val cb = netCallback ?: return
+        netCallback = null
+        firstNetEvent = true
+        runCatching {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.unregisterNetworkCallback(cb)
+        }
     }
 
     fun stop() {
+        unregisterNetworkWatch()
         discovery?.stop()
         discovery = null
         server?.stop()
@@ -122,6 +175,7 @@ object Engine {
         serverListening = false
         devMap.clear()
         _devices.value = emptyList()
+        NetLocks.releaseAll()
     }
 
     fun select(id: String) {
@@ -315,9 +369,24 @@ object Engine {
     }
 
     private fun pushJobs() {
-        _jobList.value = jobs.map { it.toUi() }.sortedWith(
+        val next = jobs.map { it.toUi() }.sortedWith(
             compareByDescending<JobUi> { it.state.active }.thenByDescending { it.startAt }
         )
+        // 没有变化就不推：否则每 400 ms 都会让所有页面重组一次
+        if (next != _jobList.value) _jobList.value = next
+    }
+
+    /** lastSeen 每次都变，比较时必须排除，否则永远判为「变了」。 */
+    private fun sameDevices(a: List<DeviceInfo>, b: List<DeviceInfo>): Boolean {
+        if (a.size != b.size) return false
+        for (i in a.indices) {
+            val x = a[i]
+            val y = b[i]
+            if (x.id != y.id || x.name != y.name || x.plat != y.plat ||
+                x.ip != y.ip || x.port != y.port || x.trusted != y.trusted
+            ) return false
+        }
+        return true
     }
 
     private fun pruned(): List<DeviceInfo> {
@@ -335,7 +404,10 @@ object Engine {
         while (true) {
             delay(400)
             try {
-                if (running) _devices.value = pruned()
+                if (running) {
+                    val next = pruned()
+                    if (!sameDevices(next, _devices.value)) _devices.value = next
+                }
                 pumpSends()
                 var changed = false
                 for (j in jobs) {
@@ -358,6 +430,13 @@ object Engine {
                     }
                 }
                 if (changed || jobs.isNotEmpty()) pushJobs()
+
+                // 传输期间持有 WifiLock：省电策略把 WiFi 降到 PSM 会让 RTT 抖动、掉速
+                val activeNow = jobs.any { it.state.active }
+                if (activeNow != netLocked) {
+                    netLocked = activeNow
+                    if (activeNow) NetLocks.acquire(ctx) else NetLocks.release()
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "tick: ${e.message}")
             }

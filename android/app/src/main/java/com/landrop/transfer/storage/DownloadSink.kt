@@ -20,6 +20,31 @@ object DownloadSink {
         return dir
     }
 
+    private fun incomingBase(context: Context): File =
+        File(context.getExternalFilesDir(null) ?: context.filesDir, "incoming")
+
+    /**
+     * 清理放弃/失败后遗留的临时目录：超过 7 天，或总量超过 2 GB 时按最旧优先删。
+     * 成功接收的目录在提交时会被删掉，因此这里只会碰到残留。
+     */
+    fun gcIncoming(context: Context, maxAgeMs: Long = 7L * 24 * 3600 * 1000, maxBytes: Long = 2L * 1024 * 1024 * 1024) {
+        runCatching {
+            val base = incomingBase(context)
+            val dirs = base.listFiles()?.filter { it.isDirectory } ?: return
+            val now = System.currentTimeMillis()
+            var total = dirs.sumOf { dirSize(it) }
+            for (d in dirs.sortedBy { it.lastModified() }) {
+                if (dirSize(d) <= 0 || now - d.lastModified() > maxAgeMs || total > maxBytes) {
+                    total -= dirSize(d)
+                    d.deleteRecursively()
+                }
+            }
+        }
+    }
+
+    private fun dirSize(dir: File): Long =
+        dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
     /**
      * 把已完成的本地文件复制进系统下载目录。
      * @param relPath 相对路径（'/' 分隔），用于保留目录结构

@@ -29,12 +29,18 @@ class Discovery(
 ) {
     @Volatile private var running = false
     private var recv: DatagramSocket? = null
-    private val senders = mutableListOf<Pair<DatagramSocket, Int>>() // socket -> broadcast addr(int)
+
+    /** 每网卡一个发送 socket。rebuild 时整体替换，避免边遍历边关。 */
+    @Volatile private var senders: List<Pair<DatagramSocket, Int>> = emptyList() // socket -> broadcast addr(int)
     private var thread: Thread? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile private var lastProbe = 0L
 
-    private val selfAddresses: Set<String> by lazy { localAddresses() }
+    /** 换网后必须重算，否则会把本机新地址当成对端。 */
+    @Volatile private var selfAddresses: Set<String> = emptySet()
+
+    /** 回 announce 的节流：同一台设备 10 秒内最多回一次，避免双方互刷。 */
+    private val announcedBack = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private fun localAddresses(): Set<String> {
         val out = mutableSetOf("127.0.0.1")
@@ -92,7 +98,18 @@ class Discovery(
         rs.soTimeout = 400
         recv = rs
 
-        // 每个网卡一个发送 socket
+        selfAddresses = localAddresses()
+        senders = buildSenders()
+        if (senders.isEmpty()) {
+            Log.w(TAG, "no iface, fallback to 255.255.255.255")
+        }
+
+        thread = Thread { loop() }.apply { isDaemon = true; name = "landrop-disc"; start() }
+    }
+
+    /** 每个网卡一个发送 socket 并绑到该网卡地址（默认选路会发到虚拟网卡上）。 */
+    private fun buildSenders(): List<Pair<DatagramSocket, Int>> {
+        val out = ArrayList<Pair<DatagramSocket, Int>>()
         try {
             for (nif in NetworkInterface.getNetworkInterfaces()) {
                 if (!nif.isUp || nif.isLoopback) continue
@@ -105,18 +122,37 @@ class Discovery(
                     s.reuseAddress = true
                     s.broadcast = true
                     s.bind(InetSocketAddress(addr, 0))
-                    senders.add(s to ipToInt(bcast))
+                    out.add(s to ipToInt(bcast))
                     Log.i(TAG, "iface ${nif.name} ${addr.hostAddress} -> ${bcast.hostAddress}")
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "enum ifaces: ${e.message}")
         }
-        if (senders.isEmpty()) {
-            Log.w(TAG, "no iface, fallback to 255.255.255.255")
-        }
+        return out
+    }
 
-        thread = Thread { loop() }.apply { isDaemon = true; name = "landrop-disc"; start() }
+    /**
+     * 网络切换后重建发送 socket。
+     *
+     * 发送 socket 在 start() 时只枚举一次并绑定到当时的网卡地址；手机换 WiFi 或从
+     * 移动网络回到 WiFi 后，旧 socket 仍在往不存在的接口发包（静默失败），而接收
+     * socket 绑 0.0.0.0 依然能收 —— 表现就是「别人能发现我，我发现不了别人」。
+     */
+    fun rebuild() {
+        if (!running) return
+        try {
+            val old = senders
+            senders = emptyList()
+            for ((s, _) in old) runCatching { s.close() }
+            selfAddresses = localAddresses()
+            announcedBack.clear()
+            senders = buildSenders()
+            lastProbe = 0
+            Log.i(TAG, "rebuilt: ${senders.size} sender(s), self=${selfAddresses.size}")
+        } catch (e: Exception) {
+            Log.w(TAG, "rebuild: ${e.message}")
+        }
     }
 
     private fun loop() {
@@ -127,13 +163,14 @@ class Discovery(
                 if (now - lastProbe >= Proto.PROBE_INTERVAL_MS) {
                     lastProbe = now
                     val p = packet("probe")
-                    if (senders.isEmpty()) {
+                    val list = senders
+                    if (list.isEmpty()) {
                         recv?.let {
                             it.send(DatagramPacket(p, p.size, InetAddress.getByName("255.255.255.255"),
                                 Proto.DISCOVER_PORT))
                         }
                     } else {
-                        for ((s, bcast) in senders) {
+                        for ((s, bcast) in list) {
                             try {
                                 s.send(DatagramPacket(p, p.size, InetAddress.getByName(intToIp(bcast)),
                                     Proto.DISCOVER_PORT))
@@ -162,7 +199,13 @@ class Discovery(
                     lastSeen = System.currentTimeMillis(),
                 )
                 onDevice(dev)
-                if (t == "probe") {
+                // 收到 probe 必回；收到陌生设备的 announce 也回一次（双方同时启动时
+                // 从「等下一个 3 秒 probe」缩短到毫秒级），同设备 10 秒内只回一次避免互刷
+                val nowTs = System.currentTimeMillis()
+                val needReply = t == "probe" ||
+                    (t == "announce" && nowTs - (announcedBack[id] ?: 0L) > 10_000)
+                if (needReply) {
+                    announcedBack[id] = nowTs
                     val p = packet("announce")
                     try {
                         val s = senders.firstOrNull()?.first ?: recv
@@ -200,7 +243,8 @@ class Discovery(
             } catch (_: Exception) {
             }
         }
-        senders.clear()
+        senders = emptyList()
+        announcedBack.clear()
         thread?.interrupt()
         thread = null
         try {

@@ -161,6 +161,10 @@ private fun JobRow(j: JobUi) {
                 TextButton(onClick = { Engine.cancel(j.id) }) {
                     Text("取消", fontSize = 12.sp, color = LdColors.Red)
                 }
+            } else if (j.canRetry) {
+                TextButton(onClick = { Engine.retry(j.id) }) {
+                    Text("重试", fontSize = 12.sp, color = LdColors.Accent)
+                }
             }
         }
         if (active) {

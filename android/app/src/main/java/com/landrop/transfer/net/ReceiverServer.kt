@@ -45,8 +45,8 @@ class ReceiverServer(
         @Volatile var ctrl: Socket? = null
     }
 
-    fun start() {
-        if (running) return
+    fun start(): Boolean {
+        if (running) return true
         running = true
         try {
             val ss = ServerSocket()
@@ -58,9 +58,11 @@ class ReceiverServer(
                 start()
             }
             Log.i(TAG, "listening ${Proto.TRANSFER_PORT}")
+            return true
         } catch (e: Exception) {
             running = false
             Log.e(TAG, "listen failed: ${e.message}")
+            return false
         }
     }
 
@@ -328,6 +330,7 @@ class ReceiverServer(
 
         var lastBytes = job.doneBytes.get()
         var lastProgress = System.currentTimeMillis()
+        var lastSaveAt = lastProgress
         while (running) {
             if (job.cancel) break
             if (sess.complete) break
@@ -336,6 +339,11 @@ class ReceiverServer(
             if (cur != lastBytes) {
                 lastBytes = cur
                 lastProgress = System.currentTimeMillis()
+                // 周期落盘：进程被系统杀掉时，位图最多只丢最近 3 秒的进度
+                if (lastProgress - lastSaveAt > 3000) {
+                    lastSaveAt = lastProgress
+                    saveMeta(root, entries)
+                }
             }
             if (System.currentTimeMillis() - lastProgress > 25_000) {
                 saveMeta(root, entries)
@@ -489,12 +497,15 @@ class ReceiverServer(
         len: Int,
     ): Boolean {
         return try {
-            var raf = sess.rafs[idx]
-            if (raf == null) {
+            val raf = sess.rafs.computeIfAbsent(idx) {
                 val f = File(sess.tempRoot, e.rel + ".part")
                 f.parentFile?.mkdirs()
-                raf = RandomAccessFile(f, "rw")
-                sess.rafs[idx] = raf
+                RandomAccessFile(f, "rw").also { r ->
+                    // 预分配：避免每写 1 MiB 都触发一次 FUSE 的文件长度扩展
+                    if (e.size > 0 && r.length() < e.size) {
+                        runCatching { r.setLength(e.size) }
+                    }
+                }
             }
             raf.seek(chunk.toLong() * Proto.CHUNK)
             raf.write(data, 0, len)
@@ -530,12 +541,20 @@ class ReceiverServer(
             val o = JSONObject()
             val arr = JSONArray()
             for (e in entries) {
+                // 数据线程正在 mark()，必须拿锁拷一份快照，否则会读到写了一半的字
+                val snapshot = synchronized(e.lock) { e.bits.copyOf() }
                 val bits = JSONArray()
-                for (w in e.bits) bits.put(w)
+                for (w in snapshot) bits.put(w)
                 arr.put(JSONObject().put("rel", e.rel).put("bits", bits))
             }
             o.put("files", arr)
-            File(root, "meta.json").writeText(o.toString())
+            val target = File(root, "meta.json")
+            val tmp = File(root, "meta.json.tmp")
+            tmp.writeText(o.toString())
+            if (!tmp.renameTo(target)) {
+                target.delete()
+                tmp.renameTo(target)
+            }
         } catch (_: Exception) {
         }
     }
