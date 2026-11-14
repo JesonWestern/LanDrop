@@ -282,6 +282,8 @@ object Engine {
     }
 
     private fun pumpSends() {
+        // 引擎停止（如改设备名触发重启）期间不要把队列里的任务放出去
+        if (!running) return
         synchronized(sendLock) {
             while (runningSends() < MAX_PARALLEL_SENDS && sendQueue.isNotEmpty()) {
                 val j = sendQueue.removeFirst()
