@@ -79,10 +79,11 @@ enum class FileKind(val label: String) {
                 m.contains("word") || m.contains("excel") || m.contains("spreadsheet") ||
                     m.contains("presentation") || m.contains("powerpoint") ||
                     m.contains("opendocument") -> DOC
-                m.contains("zip") || m.contains("rar") || m.contains("7z") ||
-                    m.contains("tar") || m.contains("compress") || m.contains("archive") -> ARCHIVE
+                // 必须排在 ARCHIVE 之前：package-archive 这个 MIME 里含 "archive"
                 m.startsWith("application/vnd.android.package") ||
                     m.contains("xapk") || m.contains("apks") -> APK
+                m.contains("zip") || m.contains("rar") || m.contains("7z") ||
+                    m.contains("tar") || m.contains("compress") || m.contains("archive") -> ARCHIVE
                 else -> OTHER
             }
         }

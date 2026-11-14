@@ -37,6 +37,11 @@ class Settings(context: Context) {
         get() = sp.getBoolean("autoAcceptTrusted", true)
         set(v) = sp.edit().putBoolean("autoAcceptTrusted", v).apply()
 
+    /** 分类页数据源：false=媒体库索引（秒开），true=全盘深度扫描。默认关闭，升级用户行为不变。 */
+    var deepScan: Boolean
+        get() = sp.getBoolean("deepScan", false)
+        set(v) = sp.edit().putBoolean("deepScan", v).apply()
+
     private fun trustedSet(): MutableSet<String> =
         (sp.getStringSet("trusted", emptySet()) ?: emptySet()).toMutableSet()
 

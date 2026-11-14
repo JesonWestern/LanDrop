@@ -24,6 +24,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.landrop.transfer.core.Engine
 import com.landrop.transfer.model.DeviceInfo
+import com.landrop.transfer.storage.Catalog
 import com.landrop.transfer.storage.FsBrowser
 
 @Composable
@@ -47,6 +49,8 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
     var speedConns by remember { mutableStateOf(Engine.settings.speedConns) }
     var speedSecs by remember { mutableStateOf(Engine.settings.speedSecs) }
     var autoTrust by remember { mutableStateOf(Engine.settings.autoAcceptTrusted) }
+    var deepScan by remember { mutableStateOf(Engine.settings.deepScan) }
+    val cat by Catalog.state.collectAsState()
     var permitted by remember { mutableStateOf(FsBrowser.hasAllFilesAccess()) }
     var tick by remember { mutableStateOf(0) }
 
@@ -103,12 +107,12 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
         }
 
         Section("传输") {
-            StepperRow("并发连接数", conns, 1, 4) {
+            StepperRow("并发连接数", conns, 1, 6) {
                 conns = it
                 Engine.settings.dataConns = it
             }
             Text(
-                "并发越高大文件吞吐越好，但低端机或慢速 WiFi 上建议 1–2。",
+                "并发越高大文件吞吐越好，但低端机或慢速 WiFi 上建议 1–2；手机之间互传建议 3。",
                 color = LdColors.TextFaint,
                 fontSize = 10.5.sp,
                 modifier = Modifier.padding(top = 4.dp),
@@ -133,6 +137,37 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                     Engine.restart()
                     tick++
                 }
+            }
+        }
+
+        Section("文件索引") {
+            SwitchRow("全盘深度扫描", deepScan) {
+                deepScan = it
+                Catalog.setDeepScan(ctx, it)
+                tick++
+            }
+            Text(
+                "默认使用系统媒体库索引，打开分类页秒开。开启后会遍历整块存储，能发现媒体库没有收录的" +
+                    "文件（手动拷进来的文档、压缩包等），结果缓存 24 小时。",
+                color = LdColors.TextFaint,
+                fontSize = 10.5.sp,
+                lineHeight = 16.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                when {
+                    cat.scanning -> "正在扫描：已索引 ${cat.scanFound} 个文件"
+                    cat.source == Catalog.Source.DEEP ->
+                        "全盘扫描 · ${cat.items.size} 个文件 · " + fmtTime(cat.generatedAt)
+                    else -> "媒体库索引 · ${cat.items.size} 个文件 · " + fmtTime(cat.generatedAt)
+                },
+                color = LdColors.TextDim,
+                fontSize = 11.5.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("重新扫描", primary = true) { Catalog.rescan(ctx); tick++ }
             }
         }
 
