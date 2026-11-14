@@ -1,6 +1,7 @@
 package com.landrop.transfer
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -10,6 +11,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.landrop.transfer.core.Engine
+import com.landrop.transfer.share.ShareIntake
 import com.landrop.transfer.ui.LanDropApp
 import com.landrop.transfer.ui.LanDropTheme
 
@@ -31,11 +33,21 @@ class MainActivity : ComponentActivity() {
             notiPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        // 冷启动：可能是从别的应用「分享 / 打开方式」进来的
+        ShareIntake.offer(intent, applicationContext)
+
         setContent {
             LanDropTheme {
                 LanDropApp()
             }
         }
+    }
+
+    /** 热启动：singleTop 下再次被分享会走这里，必须更新 intent 并投递。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        ShareIntake.offer(intent, applicationContext)
     }
 
     override fun onResume() {

@@ -11,6 +11,7 @@ import com.landrop.transfer.model.Entry
 import com.landrop.transfer.model.JobDir
 import com.landrop.transfer.model.JobState
 import com.landrop.transfer.storage.DownloadSink
+import com.landrop.transfer.util.JobIds
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -216,7 +217,7 @@ class ReceiverServer(
         val title = if (entries.size == 1) entries[0].rel.substringAfterLast('/')
         else entries[0].rel.substringBefore('/')
         val job = Job(
-            id = SEQ.incrementAndGet(),
+            id = JobIds.next(),
             dir = JobDir.RECV,
             device = dev,
             title = title,
@@ -596,6 +597,5 @@ class ReceiverServer(
 
     companion object {
         const val TAG = "LanDropRecv"
-        private val SEQ = AtomicInteger(100)
     }
 }

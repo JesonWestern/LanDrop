@@ -10,6 +10,8 @@ class Entry(
     val size: Long,
     val mtime: Long,
     val isDir: Boolean,
+    /** 数据来源。默认等价于「按 absPath 读本地文件」，从系统分享进来的 content:// 会传 UriSource。 */
+    val source: Source = Source.Path(File(absPath)),
 ) {
     val chunkCount: Int = if (isDir || size <= 0) 0
     else (((size + Proto.CHUNK - 1) / Proto.CHUNK).toInt())

@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.landrop.transfer.core.Engine
 import com.landrop.transfer.model.JobState
 import com.landrop.transfer.service.TransferService
+import com.landrop.transfer.share.ShareIntake
 
 object Tab {
     const val FILES = 0
@@ -106,6 +107,18 @@ fun LanDropApp() {
             containerColor = LdColors.Surface2,
             titleContentColor = LdColors.Text,
             textContentColor = LdColors.TextDim,
+        )
+    }
+
+    // 系统「分享 / 打开方式」进来时：勾选在线设备后发送
+    val share by ShareIntake.pending.collectAsState()
+    share?.let { s ->
+        ShareSendDialog(
+            share = s,
+            devices = devices,
+            onDismiss = { ShareIntake.clear() },
+            onRetryProbe = { Engine.refreshProbe() },
+            onSent = { tab = Tab.TRANSFER },
         )
     }
 

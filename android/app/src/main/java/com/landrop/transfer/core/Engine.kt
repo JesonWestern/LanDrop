@@ -6,6 +6,7 @@ import com.landrop.transfer.data.HistoryRec
 import com.landrop.transfer.data.HistoryStore
 import com.landrop.transfer.data.Settings
 import com.landrop.transfer.model.DeviceInfo
+import com.landrop.transfer.model.Entry
 import com.landrop.transfer.model.JobDir
 import com.landrop.transfer.model.JobState
 import com.landrop.transfer.model.JobUi
@@ -16,6 +17,7 @@ import com.landrop.transfer.net.ReceiverServer
 import com.landrop.transfer.net.Sender
 import com.landrop.transfer.net.Speed
 import com.landrop.transfer.storage.FileWalk
+import com.landrop.transfer.util.JobIds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +32,9 @@ import java.util.concurrent.atomic.AtomicInteger
 
 object Engine {
     private const val TAG = "LanDropEngine"
+
+    /** 跨设备并发上限：再多只会把上行带宽切碎，让每台都变慢。 */
+    private const val MAX_PARALLEL_SENDS = 2
 
     private lateinit var ctx: Context
     lateinit var settings: Settings
@@ -52,7 +57,10 @@ object Engine {
     private val _speed = MutableStateFlow(SpeedUi())
     val speed: StateFlow<SpeedUi> = _speed.asStateFlow()
 
-    private val seq = AtomicInteger(2)
+    private val sendLock = Any()
+
+    /** 等待开工的发送任务（单设备串行、跨设备并发上限见 [MAX_PARALLEL_SENDS]）。 */
+    private val sendQueue = ArrayDeque<Job>()
 
     @Volatile var selectedId: String? = null
         private set
@@ -152,20 +160,83 @@ object Engine {
     private fun sendInternal(dev: DeviceInfo, paths: List<String>): Boolean {
         val entries = FileWalk.collect(paths)
         if (entries.isEmpty()) return false
-        val title = if (entries.size == 1) entries[0].rel.substringAfterLast('/')
-        else entries[0].rel.substringBefore('/')
+        return sendEntries(dev, entries, null)
+    }
+
+    /**
+     * 把一份清单发给一台设备。任务先进队列，由 [pumpSends] 按并发上限启动。
+     * @param title 为空时按清单自动取（单文件用文件名，多文件用首层目录名）
+     */
+    fun sendEntries(dev: DeviceInfo, entries: List<Entry>, title: String? = null): Boolean {
+        if (entries.isEmpty()) return false
         val job = Job(
-            id = seq.getAndIncrement(),
+            id = JobIds.next(),
             dir = JobDir.SEND,
             device = dev,
-            title = title,
+            title = title ?: defaultTitle(entries),
             files = entries,
         )
-        job.state = JobState.HANDSHAKE
+        job.state = JobState.QUEUED
         jobs.add(job)
         pushJobs()
-        Sender(settings, job) { pushJobs() }.start()
+        synchronized(sendLock) { sendQueue.addLast(job) }
+        pumpSends()
         return true
+    }
+
+    /**
+     * 同一份内容发给多台设备（系统分享后的多选）。每台设备一个独立任务，
+     * 返回真正入队的设备数。
+     */
+    fun sendToDevices(devs: List<DeviceInfo>, entries: List<Entry>, title: String? = null): Int {
+        if (entries.isEmpty() || devs.isEmpty()) return 0
+        var n = 0
+        for (d in devs) {
+            // 每台设备一份独立清单：Entry 携带分块位图与已发字节，共享会互相污染
+            if (sendEntries(d, cloneEntries(entries), title)) n++
+        }
+        return n
+    }
+
+    /** 失败/暂停的发送任务重新入队。接收端会回传位图，天然续传。 */
+    fun retry(id: Int): Boolean {
+        val j = jobs.firstOrNull { it.id == id } ?: return false
+        if (j.dir != JobDir.SEND || j.state.active) return false
+        j.cancel = false
+        j.errMsg = ""
+        j.bps = 0.0
+        j.state = JobState.QUEUED
+        synchronized(sendLock) { sendQueue.addLast(j) }
+        pushJobs()
+        pumpSends()
+        return true
+    }
+
+    private fun cloneEntries(list: List<Entry>): List<Entry> =
+        list.map { Entry(it.rel, it.absPath, it.size, it.mtime, it.isDir, it.source) }
+
+    private fun defaultTitle(entries: List<Entry>): String =
+        if (entries.size == 1) entries[0].rel.substringAfterLast('/')
+        else entries[0].rel.substringBefore('/')
+
+    private fun runningSends(): Int = jobs.count {
+        it.dir == JobDir.SEND && (
+            it.state == JobState.HANDSHAKE ||
+                it.state == JobState.TRANSFERRING ||
+                it.state == JobState.VERIFYING
+            )
+    }
+
+    private fun pumpSends() {
+        synchronized(sendLock) {
+            while (runningSends() < MAX_PARALLEL_SENDS && sendQueue.isNotEmpty()) {
+                val j = sendQueue.removeFirst()
+                if (j.cancel) continue
+                j.state = JobState.HANDSHAKE
+                pushJobs()
+                Sender(settings, j) { pushJobs() }.start()
+            }
+        }
     }
 
     fun accept(id: Int, yes: Boolean) {
@@ -174,7 +245,14 @@ object Engine {
     }
 
     fun cancel(id: Int) {
-        jobs.firstOrNull { it.id == id }?.cancel = true
+        val j = jobs.firstOrNull { it.id == id } ?: return
+        j.cancel = true
+        if (j.state == JobState.QUEUED) {
+            synchronized(sendLock) { sendQueue.remove(j) }
+            j.state = JobState.CANCELED
+            j.endedAt = System.currentTimeMillis()
+            pushJobs()
+        }
     }
 
     fun removeFinished() {
@@ -258,6 +336,7 @@ object Engine {
             delay(400)
             try {
                 if (running) _devices.value = pruned()
+                pumpSends()
                 var changed = false
                 for (j in jobs) {
                     if (j.state.active) {

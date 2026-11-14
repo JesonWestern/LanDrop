@@ -3,9 +3,12 @@ package com.landrop.transfer.debug
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import com.landrop.transfer.BuildConfig
 import com.landrop.transfer.core.Engine
+import com.landrop.transfer.share.ShareIntake
+import com.landrop.transfer.storage.Catalog
 
 /**
  * Debug 变体专用的命令行钩子，供 tools/e2e_test.py 通过 adb 驱动。
@@ -48,6 +51,26 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 val devs = Engine.devices.value.joinToString(",") { "${it.name}@${it.ip}" }
                 val jobs = Engine.jobList.value.joinToString(";") { "${it.id}:${it.state}:${it.progress}" }
                 Log.i(TAG, "STATE devices=[$devs] jobs=[$jobs]")
+            }
+            "catalog" -> {
+                val st = Catalog.state.value
+                val buckets = st.buckets.joinToString(",") { "${it.kind}=${it.count}/${it.bytes}" }
+                Log.i(TAG, "CATALOG source=${st.source} total=${st.items.size} [$buckets]")
+            }
+            // 模拟从别的应用分享进来，便于无设备/自动化验证
+            "share" -> {
+                val uri = intent.getStringExtra("uri")
+                if (uri.isNullOrEmpty()) {
+                    Log.w(TAG, "share without uri")
+                    return
+                }
+                val i = Intent(Intent.ACTION_SEND).apply {
+                    type = intent.getStringExtra("mime") ?: "*/*"
+                    putExtra(Intent.EXTRA_STREAM, Uri.parse(uri))
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                ShareIntake.offer(i, app)
+                Log.i(TAG, "cmd=share uri=$uri")
             }
             else -> Log.i(TAG, "unknown cmd=$cmd")
         }

@@ -40,6 +40,11 @@ class Sender(
     private fun run() {
         var ctrl: Socket? = null
         try {
+            // 每次尝试都从干净状态开始：重试时本地位图与已发字节数必须归零，
+            // 否则 reconcile 服务端 have 位图时会重复累加 doneBytes。
+            for (e in job.files) e.reset()
+            job.doneBytes.set(0)
+
             ctrl = connect()
             val out = ctrl.getOutputStream()
             val input = BufferedInputStream(ctrl.getInputStream())
@@ -206,10 +211,8 @@ class Sender(
                 val off = ci.toLong() * Proto.CHUNK
                 val len = chunkLen(e, ci)
                 ran++
-                java.io.RandomAccessFile(e.localFile(), "r").use { raf ->
-                    raf.seek(off)
-                    raf.readFully(buf, 0, len)
-                }
+                // 数据来源可能是本地文件，也可能是分享进来的 content://（UriSource）
+                e.source.open().use { r -> r.readAt(off, buf, 0, len) }
                 val h = Proto.Header(
                     magic = Proto.MAGIC_DATA,
                     taskId = Proto.taskIdFromKey(token),
