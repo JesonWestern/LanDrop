@@ -42,6 +42,11 @@ class Settings(context: Context) {
         get() = sp.getBoolean("deepScan", false)
         set(v) = sp.edit().putBoolean("deepScan", v).apply()
 
+    /** 首次使用提示是否已经展示过（选中区/拖选）。 */
+    var selectionHintSeen: Boolean
+        get() = sp.getBoolean("selectionHintSeen", false)
+        set(v) = sp.edit().putBoolean("selectionHintSeen", v).apply()
+
     private fun trustedSet(): MutableSet<String> =
         (sp.getStringSet("trusted", emptySet()) ?: emptySet()).toMutableSet()
 

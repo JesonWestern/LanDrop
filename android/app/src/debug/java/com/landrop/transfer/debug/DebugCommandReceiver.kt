@@ -55,7 +55,11 @@ class DebugCommandReceiver : BroadcastReceiver() {
             "catalog" -> {
                 val st = Catalog.state.value
                 val buckets = st.buckets.joinToString(",") { "${it.kind}=${it.count}/${it.bytes}" }
-                Log.i(TAG, "CATALOG source=${st.source} total=${st.items.size} [$buckets]")
+                Log.i(
+                    TAG,
+                    "CATALOG source=${st.source} total=${st.items.size} raw=${st.rawRows} " +
+                        "dropped=${st.dropped} truncated=${st.truncated} [$buckets]"
+                )
             }
             // 模拟从别的应用分享进来，便于无设备/自动化验证
             "share" -> {

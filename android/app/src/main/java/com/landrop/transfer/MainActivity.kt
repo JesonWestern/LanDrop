@@ -20,6 +20,10 @@ class MainActivity : ComponentActivity() {
     private val notiPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    /** Android 8-10（API 26-29）没有「全部文件访问」，用 READ/WRITE 运行时权限浏览与落盘。 */
+    private val storagePermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -32,6 +36,8 @@ class MainActivity : ComponentActivity() {
         ) {
             notiPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) requestLegacyStoragePermissions()
 
         // 冷启动：可能是从别的应用「分享 / 打开方式」进来的
         ShareIntake.offer(intent, applicationContext)
@@ -54,5 +60,20 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // 保证服务在跑（用户可能从最近任务里回来）
         runCatching { com.landrop.transfer.service.TransferService.start(this) }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) requestLegacyStoragePermissions()
+    }
+
+    private fun requestLegacyStoragePermissions() {
+        val perms = listOfNotNull(
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            } else {
+                null
+            },
+        ).filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (perms.isNotEmpty()) runCatching { storagePermission.launch(perms.toTypedArray()) }
     }
 }

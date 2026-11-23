@@ -2,6 +2,7 @@ package com.landrop.transfer.ui
 
 import android.app.Activity
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +28,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,7 +62,9 @@ fun LanDropApp() {
     val devices by Engine.devices.collectAsState()
     val jobs by Engine.jobList.collectAsState()
     val speed by Engine.speed.collectAsState()
-    var tab by remember { mutableIntStateOf(Tab.FILES) }
+    var tab by rememberSaveable { mutableIntStateOf(Tab.FILES) }
+    // 切换 tab 时保留各页的 rememberSaveable 状态（目录位置、选中、展开、排序）
+    val tabStates = rememberSaveableStateHolder()
     val ctx = LocalContext.current
 
     val activeJobs = jobs.count { it.state.active }
@@ -122,6 +127,14 @@ fun LanDropApp() {
         )
     }
 
+    // 「打开方式」选择框（只列其他应用，避免本应用自环）
+    OpenChoiceDialog()
+
+    // 其他 tab 按返回先回「文件」页，再按一次才退出。
+    // 注意：必须注册在 Column 之前，Compose 里后注册的 BackHandler 优先级更高，
+    // 这样分类详情/子目录等内层页面的返回才会先于 tab 级返回生效。
+    BackHandler(enabled = tab != Tab.FILES) { tab = Tab.FILES }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -129,12 +142,14 @@ fun LanDropApp() {
             .statusBarsPadding()
     ) {
         Box(Modifier.weight(1f)) {
-            when (tab) {
-                Tab.FILES -> FileScreen(devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
-                Tab.CATEGORY -> CategoryScreen(devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
-                Tab.TRANSFER -> TransferScreen(jobs = jobs, onOpenFiles = { tab = Tab.FILES })
-                Tab.SPEED -> SpeedScreen(speed = speed, devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
-                else -> SettingsScreen(devices = devices)
+            tabStates.SaveableStateProvider(tab) {
+                when (tab) {
+                    Tab.FILES -> FileScreen(devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
+                    Tab.CATEGORY -> CategoryScreen(devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
+                    Tab.TRANSFER -> TransferScreen(jobs = jobs, onOpenFiles = { tab = Tab.FILES })
+                    Tab.SPEED -> SpeedScreen(speed = speed, devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
+                    else -> SettingsScreen(devices = devices)
+                }
             }
         }
         BottomBar(

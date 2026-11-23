@@ -27,7 +27,7 @@ Windows ⇄ Android / Android ⇄ Android 局域网文件互传 + 双端网速�
 ```bat
 :: Windows（需要 MinGW-w64 g++ 与 Inno Setup 6）
 win\build\build.bat        :: -> win\build\out\LanDrop.exe
-win\build\package.bat      :: -> win\dist\LanDropSetup-1.0.0.exe
+win\build\package.bat      :: -> win\dist\LanDropSetup-1.1.0.exe
 ```
 
 ```bash
@@ -38,6 +38,9 @@ cd android
 
 # 单元测试：中文目录下 gradlew test 的 worker 会因路径编码失败（见 down 说明），用脚本跑
 python tools/android_unit_test.py
+
+# Android 交付门禁：版本号 / 签名 / FileProvider / queries / 权限 / SHA-256
+powershell -NoProfile -ExecutionPolicy Bypass -File docs\verify\check_apk.ps1
 ```
 
 > `tools/android_unit_test.py` 的存在原因：本项目路径含中文（`内网传输`）。Gradle 9.4.1
@@ -80,3 +83,19 @@ python tools/e2e_test.py --win-ip 192.168.5.4
 | 手机 ↔ 手机 | 同一 WiFi 下直连，不经电脑；修了确认超时倒挂、文件句柄热路径、换网后广播失效等问题 |
 
 细节见 `protocol/LANPROTO.md` 与 `docs/交付说明.md`。
+
+## Android 1.2 新增（2026-11-22）
+
+| 能力 | 说明 |
+|---|---|
+| 列表缩略图 | 图片显示 40dp 缩略图（EXIF 方向、HEIC，媒体库来源走系统 `loadThumbnail`），APK 显示应用图标，其余类型保持手绘图标；LruCache + 4 路并发解码，零新增依赖 |
+| 返回手势 | 子目录返回上一级（先清选择、再返回，钳制在内部存储根内）；分类详情返回宫格；其他 tab 返回文件页；只有根目录才退出 |
+| 点文件打开 | 正文区点击走系统默认应用；没有默认应用时用应用内「打开方式」（只列其他应用，杜绝“打开又回到分享弹窗”）；APK 引导「安装未知应用」 |
+| 选择区与拖选 | 右侧 56dp 选择区（1dp 分割线 + 底色标注），点圆圈切换选中，按住该区域上下拖动连续选中；正文拖动仍是滚动；选中行整行高亮 |
+| 分类计数修正 | 剔除 MediaStore 目录行 / 已删除的失联行 / 隐藏父目录 / 重复路径；修正 `QUERY_ARG_SQL_SORT_ORDER` 参数类型（超 2 万行时不再静默取最旧）；截断在页面上明示 |
+| 传输明细 | 任务可展开为按文件列表（名称/大小/单文件进度/完成），收到的文件与发送的本地文件可点击打开；单文件任务在任务卡直接「打开」 |
+| 兼容性 | Android 8-10：`isExternalStorageManager` / `MediaStore.Downloads` 分支保护、存储运行时权限、旧版落盘路径；Android 11+ 行为不变 |
+| 索引新鲜度 | 接收完成主动让分类缓存失效，并同时观察 Images/Video/Audio/Downloads；分类页 15 秒 TTL |
+
+版本 `1.2.0`（`versionCode 3`），签名与 1.0/1.1 相同，可直接覆盖安装。协议仍为 `v1`，Windows 端未改动。
+

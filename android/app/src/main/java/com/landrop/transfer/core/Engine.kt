@@ -10,6 +10,7 @@ import com.landrop.transfer.data.Settings
 import com.landrop.transfer.model.DeviceInfo
 import com.landrop.transfer.model.Entry
 import com.landrop.transfer.model.JobDir
+import com.landrop.transfer.model.JobFileUi
 import com.landrop.transfer.model.JobState
 import com.landrop.transfer.model.JobUi
 import com.landrop.transfer.model.SpeedUi
@@ -299,6 +300,13 @@ object Engine {
         val j = jobs.firstOrNull { it.id == id } ?: return
         if (yes) j.acceptFlag = true else j.cancel = true
     }
+
+    /**
+     * 传输页展开任务时按需取逐文件快照。
+     * 刻意不放进 [jobList]：400ms tick 里为上万条文件重建/深比较会持续分配内存。
+     */
+    fun jobFiles(id: Int, limit: Int = Job.SNAPSHOT_LIMIT): List<JobFileUi> =
+        jobs.firstOrNull { it.id == id }?.fileSnapshot(limit) ?: emptyList()
 
     fun cancel(id: Int) {
         val j = jobs.firstOrNull { it.id == id } ?: return

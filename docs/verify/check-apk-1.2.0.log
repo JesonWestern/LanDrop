@@ -1,0 +1,30 @@
+﻿APK : D:\agentproject\内网传输\android\app\build\outputs\apk\release\app-release.apk
+SDK : C:\Users\sihuo\AppData\Local\Android\Sdk\build-tools\37.0.0
+
+  [PASS] package = com.landrop.transfer
+  [PASS] versionCode = 3
+  [PASS] versionName = 1.2.0
+  [PASS] minSdkVersion = 26
+  [PASS] targetSdkVersion = 36
+  [PASS] REQUEST_INSTALL_PACKAGES（点 APK 走安装器）
+  [PASS] MANAGE_EXTERNAL_STORAGE（文件浏览）
+  [PASS] READ_EXTERNAL_STORAGE maxSdkVersion=32
+  [PASS] WRITE_EXTERNAL_STORAGE maxSdkVersion=29
+  [PASS] FOREGROUND_SERVICE_DATA_SYNC（前台服务类型）
+  [PASS] FileProvider 已声明
+  [PASS] FileProvider authority 正确
+  [PASS] FileProvider exported=false
+  [PASS] FileProvider grantUriPermissions=true
+  [PASS] file_paths 资源存在且已绑定
+  [PASS] provider 未暴露 root-path（最小授权）
+  [PASS] queries 已声明
+  [PASS] queries 覆盖 content scheme
+  [PASS] release 不含调试广播入口
+  [PASS] release 不可调试
+  [PASS] 签名证书 SHA-256 与 1.0/1.1 一致（覆盖安装不丢数据）
+  [PASS] SHA-256 与交付说明一致
+
+大小    : 8535953 字节
+SHA-256 : 3EBB30358580A78E3C833D2248D1163FB3AE74A1E322E23A604FB664CE01232D
+
+RESULT: PASS（D:\agentproject\内网传输\android\app\build\outputs\apk\release\app-release.apk）

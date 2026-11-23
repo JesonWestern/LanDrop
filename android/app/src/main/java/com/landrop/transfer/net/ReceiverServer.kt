@@ -10,6 +10,7 @@ import com.landrop.transfer.model.DeviceInfo
 import com.landrop.transfer.model.Entry
 import com.landrop.transfer.model.JobDir
 import com.landrop.transfer.model.JobState
+import com.landrop.transfer.storage.Catalog
 import com.landrop.transfer.storage.DownloadSink
 import com.landrop.transfer.util.JobIds
 import org.json.JSONArray
@@ -189,6 +190,7 @@ class ReceiverServer(
         }
 
         val entries = ArrayList<Entry>(filesArr.length())
+        val seenRels = HashSet<String>(filesArr.length() * 2)
         var totalBytes = 0L
         var totalChunks = 0
         var bad = false
@@ -203,6 +205,12 @@ class ReceiverServer(
                 break
             }
             val clean = relRaw.split('\\').joinToString("/") { sanitize(it) }
+            // 重复 rel 会让两条独立位图流写同一个 .part，提交后互相覆盖 → 静默数据损坏。
+            // 新版发送端已保证 rel 唯一；旧版遇到同名文件时这里直接拒绝，而不是悄悄写坏。
+            if (!seenRels.add(clean)) {
+                bad = true
+                break
+            }
             val e = Entry(clean, "", size, TimeUtil.fileTimeToMs(mtime), isDir)
             entries.add(e)
             if (!isDir) {
@@ -394,10 +402,15 @@ class ReceiverServer(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
                 "LanDrop"
             )
+            val failures = ArrayList<String>()
+            val dirWarnings = ArrayList<String>()
             for (e in entries) {
                 if (e.isDir) {
-                    // MediaStore 无法表达空目录，直接用文件 API 建（已有全部文件权限）
-                    File(publicRoot, e.rel).mkdirs()
+                    // MediaStore 无法表达空目录，直接用文件 API 建（R+ 有全部文件权限；旧版靠 WRITE）。
+                    // 失败只记 warning：文件已经发布成功，不应因为“空目录没建成”把整单判失败，
+                    // 否则用户看到“保存失败”但下载目录里其实已有文件（API 29 且无 WRITE 时会出现）。
+                    val d = File(publicRoot, e.rel)
+                    if (!d.exists() && !d.mkdirs()) dirWarnings.add(e.rel)
                     continue
                 }
                 val part = File(root, e.rel + ".part")
@@ -407,10 +420,33 @@ class ReceiverServer(
                     if (!part.renameTo(dst)) part.copyTo(dst, overwrite = true)
                 }
                 if (e.mtime > 0) dst.setLastModified(e.mtime)
-                DownloadSink.publish(context, dst, e.rel)
+                val published = DownloadSink.publish(context, dst, e.rel)
+                if (published.ok) {
+                    job.published[e.rel] = published
+                } else {
+                    failures.add("${e.rel}（${published.err.ifEmpty { "保存失败" }}）")
+                }
+            }
+            if (failures.isNotEmpty()) {
+                // 不删临时目录：保留唯一副本，允许用户重试
+                job.state = JobState.FAILED
+                job.errMsg = "保存失败 ${failures.size} 个文件：" + failures.take(3).joinToString("；") +
+                    if (failures.size > 3) " …" else ""
+                job.endedAt = System.currentTimeMillis()
+                send(
+                    JSONObject().put("t", "error").put("reason", "commit")
+                        .put("detail", failures.take(5).joinToString("；"))
+                )
+                runCatching { closeSession(sess) }
+                sessions.remove(key)
+                onUpdate()
+                return
             }
             shownRoot = if (structured) "Download/LanDrop/$top" else "Download/LanDrop"
             job.savePath = shownRoot
+            if (dirWarnings.isNotEmpty()) {
+                job.errMsg = "部分空目录未创建（" + dirWarnings.take(3).joinToString("；") + "）"
+            }
             job.state = JobState.DONE
             job.bps = 0.0
             job.endedAt = System.currentTimeMillis()
@@ -418,13 +454,17 @@ class ReceiverServer(
                 JSONObject().put("t", "done_ok").put("job", key).put("path", shownRoot)
             )
             root.deleteRecursively()
+            runCatching { closeSession(sess) }
             sessions.remove(key)
+            // 常量通知 + 触发一次通知刷新（下载目录新增了文件）
+            Catalog.invalidate(context)
             onUpdate()
         } catch (e: Exception) {
             Log.e(TAG, "commit: ${e.message}")
             job.state = JobState.FAILED
             job.errMsg = "保存失败：${e.message}"
             send(JSONObject().put("t", "error").put("reason", "commit"))
+            runCatching { closeSession(sess) }
             onUpdate()
             sessions.remove(key)
         }

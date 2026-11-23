@@ -24,8 +24,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -36,6 +39,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.landrop.transfer.core.Engine
 import com.landrop.transfer.model.DeviceInfo
 import com.landrop.transfer.storage.Catalog
@@ -51,8 +57,30 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
     var autoTrust by remember { mutableStateOf(Engine.settings.autoAcceptTrusted) }
     var deepScan by remember { mutableStateOf(Engine.settings.deepScan) }
     val cat by Catalog.state.collectAsState()
-    var permitted by remember { mutableStateOf(FsBrowser.hasAllFilesAccess()) }
-    var tick by remember { mutableStateOf(0) }
+    var permitted by remember { mutableStateOf(FsBrowser.hasAllFilesAccess(ctx)) }
+    var uiRev by remember { mutableIntStateOf(0) }
+
+    val grant = rememberGrantStorageAccess {
+        permitted = FsBrowser.hasAllFilesAccess(ctx)
+        uiRev++
+    }
+
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val obs = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_RESUME) {
+                permitted = FsBrowser.hasAllFilesAccess(ctx)
+                deepScan = Engine.settings.deepScan
+                uiRev++
+            }
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+
+    LaunchedEffect(permitted) {
+        if (permitted) Catalog.warm(ctx)
+    }
 
     Column(
         Modifier
@@ -90,7 +118,7 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                 Pill("保存名称", primary = true) {
                     if (name.isNotBlank()) {
                         Engine.setDeviceName(name.trim())
-                        tick++
+                        uiRev++
                     }
                 }
                 Pill("恢复默认") {
@@ -129,13 +157,14 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
             )
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("已信任设备 ${Engine.settings.trustedCount()} 台",
+                val trustedCount = remember(uiRev) { Engine.settings.trustedCount() }
+                Text("已信任设备 $trustedCount 台",
                     color = LdColors.TextDim, fontSize = 12.sp)
                 Spacer(Modifier.width(12.dp))
                 Pill("清空") {
                     Engine.settings.clearTrusted()
                     Engine.restart()
-                    tick++
+                    uiRev++
                 }
             }
         }
@@ -144,7 +173,7 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
             SwitchRow("全盘深度扫描", deepScan) {
                 deepScan = it
                 Catalog.setDeepScan(ctx, it)
-                tick++
+                uiRev++
             }
             Text(
                 "默认使用系统媒体库索引，打开分类页秒开。开启后会遍历整块存储，能发现媒体库没有收录的" +
@@ -158,6 +187,7 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
             Text(
                 when {
                     cat.scanning -> "正在扫描：已索引 ${cat.scanFound} 个文件"
+                    cat.loading || (cat.items.isEmpty() && cat.generatedAt == 0L) -> "正在读取索引…"
                     cat.source == Catalog.Source.DEEP ->
                         "全盘扫描 · ${cat.items.size} 个文件 · " + fmtTime(cat.generatedAt)
                     else -> "媒体库索引 · ${cat.items.size} 个文件 · " + fmtTime(cat.generatedAt)
@@ -167,7 +197,7 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
             )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill("重新扫描", primary = true) { Catalog.rescan(ctx); tick++ }
+                Pill("重新扫描", primary = true) { Catalog.rescan(ctx); uiRev++ }
             }
         }
 
@@ -205,10 +235,7 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                     modifier = Modifier.weight(1f),
                 )
                 Pill(if (permitted) "已授权" else "去授权", primary = !permitted) {
-                    val i = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                    i.data = Uri.parse("package:${ctx.packageName}")
-                    runCatching { ctx.startActivity(i) }
-                    tick++
+                    if (!permitted) grant()
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -227,7 +254,7 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
         }
 
         Section("关于") {
-            Text("内网快传 LanDrop 1.1.0", color = LdColors.Text, fontSize = 13.sp)
+            Text("内网快传 LanDrop 1.2.0", color = LdColors.Text, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             Text(
                 "Windows ⇄ Android / Android ⇄ Android 局域网文件互传与网速测试。\n" +

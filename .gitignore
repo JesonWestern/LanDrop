@@ -30,6 +30,8 @@
 # --- 开发期截图与临时文件 ---
 /android/*.png
 *.log
+# 例外：交付验收日志需要入库（docs/verify/*.log）
+!/docs/verify/*.log
 *.stackdump
 Thumbs.db
 .DS_Store

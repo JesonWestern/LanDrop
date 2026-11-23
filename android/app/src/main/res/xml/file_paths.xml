@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 可暴露的路径（最小授权）。
+    - external-path：/storage/emulated/0 下的用户文件（DCIM/Download/LanDrop 等）；
+    - external-files-path：应用外部私有目录（接收临时目录 incoming/final）；
+    - files-path / cache-path：分享缓存等。
+    provider 不导出，只有我们主动 grant 给某个应用的单个 uri 才能被读取。
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-path name="external" path="." />
+    <external-files-path name="external_files" path="." />
+    <files-path name="files" path="." />
+    <cache-path name="cache" path="." />
+</paths>

@@ -32,7 +32,9 @@ object DeepScan {
     )
 
     private const val MAGIC = 0x4C444331 // "LDC1"
-    private const val VERSION = 1
+
+    /** 2：可见性口径改为与 CatalogPolicy 共用（点目录/Android-data·obb 统一），旧缓存自动失效。 */
+    private const val VERSION = 2
     private const val MAX_DEPTH = 12
     private const val MAX_ITEMS = 200_000
     private const val YIELD_EVERY = 500
@@ -67,7 +69,8 @@ object DeepScan {
 
             for (f in children) {
                 val n = f.name
-                if (n.startsWith(".")) continue
+                // 与分类页/最近文件共用同一套可见性口径（点开头路径段、Android/data·obb）
+                if (!CatalogPolicy.isVisiblePath(f.absolutePath)) continue
                 if (f.isDirectory) {
                     // 根下的 Android/ 整棵剪掉：data/obb 无权限，media 体积巨大且不进分类
                     if (depth == 0 && n.equals("Android", ignoreCase = true)) continue

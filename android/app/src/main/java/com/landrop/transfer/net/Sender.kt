@@ -68,7 +68,7 @@ class Sender(
         try {
             // 每次尝试都从干净状态开始：重试时本地位图与已发字节必须归零，
             // 否则 reconcile 服务端 have 位图时会重复累加 doneBytes。
-            for (e in job.files) e.reset()
+            for (e in job.files) synchronized(e.lock) { e.reset() }
             job.doneBytes.set(0)
             pending.clear()
             cursor.set(0)
@@ -135,16 +135,17 @@ class Sender(
                     if (idx < 0 || idx >= job.files.size) continue
                     val bits = o.optJSONArray("bits") ?: continue
                     val e = job.files[idx]
-                    for (k in 0 until minOf(bits.length(), e.bits.size)) {
-                        e.bits[k] = bits.optInt(k, 0)
+                    synchronized(e.lock) {
+                        for (k in 0 until minOf(bits.length(), e.bits.size)) {
+                            e.bits[k] = bits.optInt(k, 0)
+                        }
+                        // 直接写 bits 不会更新 doneChunks/逐文件进度，必须重算
+                        e.recount()
                     }
-                    var counted = 0
-                    for (c in 0 until e.chunkCount) {
-                        if ((e.bits[c ushr 5] and (1 shl (c and 31))) != 0) counted++
-                    }
-                    job.doneBytes.addAndGet((counted.toLong() * Proto.CHUNK).coerceAtMost(e.size))
                 }
-                if (job.doneBytes.get() > job.totalBytes) job.doneBytes.set(job.totalBytes)
+                var sum = 0L
+                for (e in job.files) sum += e.doneBytes()
+                job.doneBytes.set(sum.coerceAtMost(job.totalBytes))
             }
 
             for (fi in job.files.indices) {
@@ -189,9 +190,20 @@ class Sender(
             sendLine(out, done)
             ctrl.soTimeout = 60000
             val finalLine = LineReader(input).readLine()
-            val ok = finalLine != null && JSONObject(finalLine).optString("t") == "done_ok"
+            val finalResp = runCatching { finalLine?.let { JSONObject(it) } }.getOrNull()
+            val ok = finalResp?.optString("t") == "done_ok"
             job.state = if (ok) JobState.DONE else JobState.FAILED
-            if (!ok) job.errMsg = "对方校验失败"
+            if (!ok) {
+                val reason = finalResp?.optString("reason").orEmpty()
+                val detail = finalResp?.optString("detail").orEmpty()
+                job.errMsg = when {
+                    reason == "commit" -> "对方保存失败：" + detail.ifEmpty { "下载目录写入失败" }
+                    reason == "incomplete" -> "对方未收全"
+                    reason == "canceled" -> "对方取消了接收"
+                    detail.isNotEmpty() -> detail
+                    else -> "对方校验失败"
+                }
+            }
             job.bps = 0.0
             job.endedAt = System.currentTimeMillis()
             onUpdate()

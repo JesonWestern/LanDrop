@@ -1,6 +1,7 @@
 package com.landrop.transfer.storage
 
 import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.Context
 import android.database.ContentObserver
 import android.os.Build
@@ -11,6 +12,7 @@ import android.provider.MediaStore
 import com.landrop.transfer.data.Settings
 import com.landrop.transfer.model.FileItem
 import com.landrop.transfer.model.FileKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -20,18 +22,24 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 「分类」页的数据层。
  *
  * 默认数据源是系统媒体库索引（MediaStore.Files，秒开），设置里可切到全盘深度扫描
- * （[DeepScan]）。结果常驻内存，避免每次切 tab 都重扫 —— 这是本页最大的性能陷阱。
+ * （[DeepScan]）。结果常驻内存，避免每次切 tab 都重扫。
+ *
+ * 计数口径修正（1.2）：
+ *  - QUERY_ARG_SQL_SORT_ORDER 必须是 String（原来是 String[]，被 provider 静默忽略，
+ *    超过 2 万行时取到的是最旧的 2 万行）；
+ *  - 目录行/失效行/隐藏父目录/重复路径一律不进分类（见 [CatalogPolicy]）；
+ *  - 截断（达到 LIMIT）会如实写进 [State.truncated]，UI 明确提示。
  */
 object Catalog {
 
     enum class Source { MEDIA, DEEP }
-
-    data class KindBucket(val kind: FileKind, val count: Int, val bytes: Long)
 
     data class State(
         val items: List<FileItem> = emptyList(),
@@ -44,11 +52,13 @@ object Catalog {
         val source: Source = Source.MEDIA,
         val truncated: Boolean = false,
         val error: String = "",
+        /** 本次查询 provider 返回的原始行数（诊断用）。 */
+        val rawRows: Int = 0,
+        /** 被过滤掉的行数（目录/失效/隐藏/重复，诊断用）。 */
+        val dropped: Int = 0,
     )
 
-    /** 媒体库查询上限：不设上限时，三万张照片的机器会拉全表并多次扩容 CursorWindow。 */
-    private const val LIMIT = 20_000
-    private const val MEDIA_TTL_MS = 60_000L
+    private const val MEDIA_TTL_MS = 15_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow(State())
@@ -57,7 +67,11 @@ object Catalog {
     @Volatile private var appCtx: Context? = null
     private var prefs: Settings? = null
     @Volatile private var lastLoad = 0L
-    private var scanJob: Job? = null
+    @Volatile private var scanJob: Job? = null
+    @Volatile private var mediaJob: Job? = null
+
+    /** 刷新代号：只有最后一次发起的查询允许写状态，避免旧结果覆盖新结果（网络线程也会调 invalidate）。 */
+    private val generation = AtomicInteger(0)
 
     private val main by lazy { Handler(Looper.getMainLooper()) }
 
@@ -83,21 +97,35 @@ object Catalog {
         appCtx = app
         val s = Settings(app)
         prefs = s
-        runCatching {
-            app.contentResolver.registerContentObserver(
-                MediaStore.Files.getContentUri("external"), true, observer
-            )
-        }
-        if (s.deepScan) {
-            val cached = DeepScan.load(app)
-            if (cached != null) {
-                emit(cached.items, Source.DEEP, cached.generatedAt, cached.truncated)
-                if (System.currentTimeMillis() - cached.generatedAt > DeepScan.TTL_MS) startDeepScan(app)
+        registerObservers(app)
+        // 深扫缓存可能十万条（约 7 MB），解析放到 IO 线程，避免分类/设置页首帧卡顿
+        scope.launch {
+            if (s.deepScan) {
+                val cached = DeepScan.load(app)
+                if (cached != null) {
+                    emit(cached.items, Source.DEEP, cached.generatedAt, cached.truncated, 0)
+                    if (System.currentTimeMillis() - cached.generatedAt > DeepScan.TTL_MS) startDeepScan(app)
+                } else {
+                    startDeepScan(app)
+                }
             } else {
-                startDeepScan(app)
+                refresh(app, force = true)
             }
-        } else {
-            refresh(app, force = true)
+        }
+    }
+
+    private fun registerObservers(app: Context) {
+        val uris = ArrayList<android.net.Uri>(5)
+        uris.add(MediaStore.Files.getContentUri("external"))
+        uris.add(MediaStore.Images.Media.getContentUri("external"))
+        uris.add(MediaStore.Video.Media.getContentUri("external"))
+        uris.add(MediaStore.Audio.Media.getContentUri("external"))
+        // MediaStore.Downloads 是 API 29 才有的类：API 26-28 上不能触碰，否则 NoClassDefFoundError
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            uris.add(MediaStore.Downloads.getContentUri("external"))
+        }
+        for (u in uris) {
+            runCatching { app.contentResolver.registerContentObserver(u, true, observer) }
         }
     }
 
@@ -116,21 +144,51 @@ object Catalog {
         }
     }
 
-    /** @param force 忽略 60 秒缓存 */
+    /** 接收落盘/外部变更后主动让缓存失效（Engine、ReceiverServer 调用）。 */
+    fun invalidate(ctx: Context? = null) {
+        lastLoad = 0L
+        val app = appCtx ?: ctx?.applicationContext ?: return
+        if (appCtx == null) warm(app)
+        if (_state.value.source == Source.MEDIA && !_state.value.scanning) refresh(app, force = true)
+    }
+
+    /** @param force 忽略 15 秒缓存 */
     fun refresh(ctx: Context, force: Boolean = false) {
         if (_state.value.scanning) return
         if (!force && System.currentTimeMillis() - lastLoad < MEDIA_TTL_MS && _state.value.items.isNotEmpty()) {
             return
         }
         val app = ctx.applicationContext
+        if (appCtx == null) warm(app)
+        val gen = generation.incrementAndGet()
+        mediaJob?.cancel()
         _state.update { it.copy(loading = true, error = "") }
-        scope.launch {
-            val list = runCatching { queryMedia(app) }.getOrElse { e ->
+        mediaJob = scope.launch {
+            val result = runCatching { queryMedia(app) }
+            if (gen != generation.get()) return@launch
+            val rows = result.getOrElse { e ->
+                if (e is CancellationException) throw e
                 _state.update { it.copy(loading = false, error = e.message ?: "读取媒体库失败") }
                 return@launch
             }
+            val rawRows = rows.size
+            val truncated = CatalogPolicy.truncated(rawRows)
+            val capped = if (truncated) rows.subList(0, CatalogPolicy.LIMIT) else rows
+            val items = CatalogPolicy.toItems(
+                rows = capped,
+                isDir = { File(it).isDirectory },
+                exists = { File(it).exists() },
+                uriOf = { id -> mediaUri(id) },
+            )
+            if (gen != generation.get()) return@launch
             lastLoad = System.currentTimeMillis()
-            emit(list, Source.MEDIA, System.currentTimeMillis(), false)
+            emit(
+                items = items,
+                source = Source.MEDIA,
+                at = System.currentTimeMillis(),
+                truncated = truncated,
+                rawRows = rawRows,
+            )
             _state.update { it.copy(loading = false) }
         }
     }
@@ -138,27 +196,29 @@ object Catalog {
     fun startDeepScan(ctx: Context) {
         if (_state.value.scanning) return
         val app = ctx.applicationContext
-        if (appCtx == null) {
-            appCtx = app
-            prefs = Settings(app)
-        }
+        if (appCtx == null) warm(app)
         scanJob?.cancel()
+        mediaJob?.cancel()
         _state.update {
             it.copy(scanning = true, scanFound = 0, scanDir = "", error = "", truncated = false)
         }
         scanJob = scope.launch {
             val root = FsBrowser.root()
-            val result = runCatching {
+            val result = try {
                 DeepScan.scan(root) { found, dir ->
                     _state.update { it.copy(scanFound = found, scanDir = dir) }
                 }
-            }.getOrElse { e ->
+            } catch (e: CancellationException) {
+                // 用户关闭开关：只清运行状态，不算失败
+                _state.update { it.copy(scanning = false, scanFound = 0, scanDir = "") }
+                return@launch
+            } catch (e: Exception) {
                 _state.update { it.copy(scanning = false, error = e.message ?: "扫描失败") }
                 return@launch
             }
             DeepScan.save(app, result)
             lastLoad = System.currentTimeMillis()
-            emit(result.items, Source.DEEP, result.generatedAt, result.truncated)
+            emit(result.items, Source.DEEP, result.generatedAt, result.truncated, 0)
             _state.update { it.copy(scanning = false, scanFound = 0, scanDir = "") }
         }
     }
@@ -171,16 +231,8 @@ object Catalog {
         }
     }
 
-    private fun emit(items: List<FileItem>, source: Source, at: Long, truncated: Boolean) {
-        val n = FileKind.entries.size
-        val counts = IntArray(n)
-        val bytes = LongArray(n)
-        for (f in items) {
-            val i = f.kind.ordinal
-            counts[i]++
-            bytes[i] += f.size
-        }
-        val buckets = FileKind.entries.mapIndexed { i, k -> KindBucket(k, counts[i], bytes[i]) }
+    private fun emit(items: List<FileItem>, source: Source, at: Long, truncated: Boolean, rawRows: Int) {
+        val buckets = CatalogPolicy.buckets(items)
         _state.update {
             it.copy(
                 items = items,
@@ -188,13 +240,20 @@ object Catalog {
                 generatedAt = at,
                 source = source,
                 truncated = truncated,
+                rawRows = rawRows,
+                dropped = if (rawRows > 0) rawRows - items.size else it.dropped,
             )
         }
     }
 
-    private fun queryMedia(ctx: Context): List<FileItem> {
-        val out = ArrayList<FileItem>(4096)
+    private fun mediaUri(id: Long): String = runCatching {
+        ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), id).toString()
+    }.getOrDefault("")
+
+    private fun queryMedia(ctx: Context): List<MediaRow> {
+        val out = ArrayList<MediaRow>(4096)
         val proj = arrayOf(
+            MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DATA,
             MediaStore.MediaColumns.DISPLAY_NAME,
             MediaStore.MediaColumns.SIZE,
@@ -210,15 +269,18 @@ object Catalog {
         }
         val args = Bundle().apply {
             putString(ContentResolver.QUERY_ARG_SQL_SELECTION, sel.toString())
-            putStringArray(
+            // 注意：QUERY_ARG_SQL_SORT_ORDER 的契约类型是 String，不是 String[]。
+            // 传错类型时 provider 会静默忽略排序，配合 LIMIT 会取到最旧的行。
+            putString(
                 ContentResolver.QUERY_ARG_SQL_SORT_ORDER,
-                arrayOf("${MediaStore.MediaColumns.DATE_MODIFIED} DESC"),
+                "${MediaStore.MediaColumns.DATE_MODIFIED} DESC, ${MediaStore.MediaColumns._ID} DESC",
             )
-            putInt(ContentResolver.QUERY_ARG_LIMIT, LIMIT)
+            putInt(ContentResolver.QUERY_ARG_LIMIT, CatalogPolicy.LIMIT + 1)
         }
         ctx.contentResolver.query(
             MediaStore.Files.getContentUri("external"), proj, args, null
         )?.use { c ->
+            val iId = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val iData = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
             val iName = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val iSize = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
@@ -227,23 +289,20 @@ object Catalog {
             while (c.moveToNext()) {
                 val path = c.getString(iData) ?: continue
                 val name = c.getString(iName) ?: path.substringAfterLast('/')
-                if (name.startsWith(".")) continue
-                val lower = path.lowercase()
-                // 应用私有目录：既无权限也不该出现在分类里
-                if (lower.contains("/android/data/") || lower.contains("/android/obb/")) continue
-                val size = c.getLong(iSize)
-                if (size <= 0L) continue
                 out.add(
-                    FileItem(
-                        name = name,
+                    MediaRow(
+                        id = c.getLong(iId),
                         path = path,
-                        isDir = false,
-                        size = size,
+                        name = name,
+                        size = c.getLong(iSize),
                         // MediaStore 的 DATE_MODIFIED 单位是秒
-                        mtime = c.getLong(iMod) * 1000L,
+                        mtimeMs = c.getLong(iMod) * 1000L,
                         mime = c.getString(iMime) ?: "",
                     )
                 )
+                // 多取一行用于判定“是否还有更多”；API 26-28 的旧 MediaProvider 不认
+                // QUERY_ARG_LIMIT，这里同样只读到 LIMIT+1 行就停，避免拉全表。
+                if (out.size > CatalogPolicy.LIMIT) break
             }
         }
         return out

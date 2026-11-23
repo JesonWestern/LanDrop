@@ -1,8 +1,5 @@
 package com.landrop.transfer.ui
 
-import android.content.Intent
-import android.net.Uri
-import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,9 +21,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -38,6 +37,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,29 +53,39 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.landrop.transfer.core.Engine
 import com.landrop.transfer.model.DeviceInfo
+import com.landrop.transfer.model.FileItem
 import com.landrop.transfer.model.FileKind
 import com.landrop.transfer.storage.Catalog
 import com.landrop.transfer.storage.CatalogSort
 import com.landrop.transfer.storage.FsBrowser
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
- * 「分类」页：像文件管理器那样按类型聚合，点进分类可排序、多选后发送。
+ * 「分类」页：按类型聚合，点进分类可排序、多选发送。
  * 数据来自 [Catalog]（默认媒体库索引，设置里可切全盘扫描）。
  */
 @Composable
 fun CategoryScreen(devices: List<DeviceInfo>, onNeedDevice: () -> Unit) {
     val ctx = LocalContext.current
     val st by Catalog.state.collectAsState()
-    var permitted by remember { mutableStateOf(FsBrowser.hasAllFilesAccess()) }
-    var openKind by remember { mutableStateOf<FileKind?>(null) }
-    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var permitted by remember { mutableStateOf(FsBrowser.hasAllFilesAccess(ctx)) }
+    var openKindName by rememberSaveable { mutableStateOf<String?>(null) }
+    val kind = remember(openKindName) {
+        openKindName?.let { n -> FileKind.entries.firstOrNull { it.name == n } }
+    }
+    val selected = rememberStringSetState()
     var tick by remember { mutableIntStateOf(0) }
+    var sending by remember { mutableStateOf(false) }
+
+    val grant = rememberGrantStorageAccess { tick++ }
 
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
         val obs = LifecycleEventObserver { _, e ->
             if (e == Lifecycle.Event.ON_RESUME) {
-                permitted = FsBrowser.hasAllFilesAccess()
+                permitted = FsBrowser.hasAllFilesAccess(ctx)
                 if (permitted) Catalog.refresh(ctx)
                 tick++
             }
@@ -83,138 +94,205 @@ fun CategoryScreen(devices: List<DeviceInfo>, onNeedDevice: () -> Unit) {
         onDispose { owner.lifecycle.removeObserver(obs) }
     }
 
-    LaunchedEffect(permitted, tick) {
+    LaunchedEffect(permitted) {
         if (permitted) Catalog.warm(ctx)
+    }
+
+    if (!permitted) {
+        Column(Modifier.fillMaxSize()) {
+            PermissionCard(legacy = isLegacyStorage(), onGrant = grant)
+        }
+        return
     }
 
     val selDevice = devices.firstOrNull { it.id == (Engine.selectedId ?: "") }
         ?: devices.firstOrNull()
 
-    if (!permitted) {
-        PermissionCard {
-            val i = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-            i.data = Uri.parse("package:${ctx.packageName}")
-            runCatching { ctx.startActivity(i) }
-        }
-        return
-    }
-
-    val kind = openKind
     if (kind == null) {
         CategoryGrid(
             state = st,
             onOpen = {
-                openKind = it
-                selected = emptySet()
+                openKindName = it.name
+                selected.value = emptySet()
             },
             onToggleScan = { Catalog.setDeepScan(ctx, it) },
         )
-    } else {
-        val all = remember(st.items, kind) { st.items.filter { it.kind == kind } }
-        var sort by remember(kind) { mutableStateOf(CatalogSort()) }
-        val sorted = remember(all, sort) { sort.sort(all) }
+        return
+    }
 
-        BackHandler { openKind = null }
+    // ---- 分类详情 ----
+    var sortKeyName by rememberSaveable { mutableStateOf(CatalogSort.Key.TIME.name) }
+    var sortAsc by rememberSaveable { mutableStateOf(false) }
+    val sort = CatalogSort(CatalogSort.Key.valueOf(sortKeyName), sortAsc)
 
-        Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+    val all = remember(st.items, kind) { st.items.filter { it.kind == kind } }
+    var sorted by remember(kind) { mutableStateOf<List<FileItem>>(emptyList()) }
+    var sorting by remember(kind) { mutableStateOf(false) }
+    LaunchedEffect(all, sort) {
+        sorting = true
+        sorted = withContext(Dispatchers.Default) { sort.sort(all) }
+        sorting = false
+    }
+
+    BackHandler {
+        if (selected.value.isNotEmpty()) selected.value = emptySet() else openKindName = null
+    }
+
+    val rows = remember(sorted) {
+        buildList {
+            if (sorted.isEmpty()) add(ListRow.Empty("这个分类下还没有文件"))
+            sorted.forEach { add(ListRow.Item(it)) }
+            add(ListRow.Bottom)
+        }
+    }
+    val byPath = remember(sorted) { sorted.associateBy { it.path } }
+    val selectedBytes = remember(selected.value, byPath) {
+        selected.value.sumOf { byPath[it]?.size ?: 0L }
+    }
+
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var dragLast by remember { mutableIntStateOf(-1) }
+
+    val rowPaths = remember(rows) { rows.map { (it as? ListRow.Item)?.item?.path } }
+    fun selectRange(a: Int, b: Int) {
+        val add = pathsInRange(rowPaths, a, b)
+        if (add.isNotEmpty()) selected.value = selected.value + add
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "‹ 返回",
+                color = LdColors.Accent,
+                fontSize = 13.sp,
+                modifier = Modifier
+                    .clickable { openKindName = null; selected.value = emptySet() }
+                    .padding(horizontal = 4.dp, vertical = 8.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            FileGlyph(kind = kind, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                kind.label,
+                color = LdColors.Text,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            if (sorting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    color = LdColors.TextFaint,
+                    strokeWidth = 1.5.dp,
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            Text("${all.size} 个", color = LdColors.TextFaint, fontSize = 12.sp)
+        }
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            CatalogSort.Key.entries.forEach { k ->
+                val on = sort.key == k
+                val arrow = when {
+                    !on -> ""
+                    sort.asc -> " ↑"
+                    else -> " ↓"
+                }
                 Text(
-                    "‹ 返回",
-                    color = LdColors.Accent,
-                    fontSize = 13.sp,
+                    k.label + arrow,
+                    color = if (on) Color.White else LdColors.TextDim,
+                    fontSize = 12.sp,
                     modifier = Modifier
-                        .clickable { openKind = null }
-                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                        .background(
+                            if (on) LdColors.AccentDim else LdColors.Surface2,
+                            RoundedCornerShape(16.dp)
+                        )
+                        .border(
+                            1.dp,
+                            if (on) LdColors.Accent else LdColors.Border,
+                            RoundedCornerShape(16.dp)
+                        )
+                        .clickable {
+                            if (sort.key == k) sortAsc = !sortAsc else {
+                                sortKeyName = k.name
+                                sortAsc = false
+                            }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
-                Spacer(Modifier.width(8.dp))
-                FileGlyph(kind = kind, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    kind.label,
-                    color = LdColors.Text,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                Text("${all.size} 个", color = LdColors.TextFaint, fontSize = 12.sp)
             }
+        }
 
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Box(Modifier.weight(1f)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .gutterDragSelect(
+                        listState = listState,
+                        gutterWidth = GUTTER_WIDTH_DP.dp,
+                        rows = { rows },
+                        onDragStart = { idx, item ->
+                            dragLast = idx
+                            selected.value = selected.value + item.item.path
+                        },
+                        onDragOver = { idx, _ ->
+                            if (dragLast >= 0 && dragLast != idx) selectRange(dragLast, idx)
+                            dragLast = idx
+                        },
+                    ),
             ) {
-                CatalogSort.Key.entries.forEach { k ->
-                    val on = sort.key == k
-                    val arrow = when {
-                        !on -> ""
-                        sort.asc -> " ↑"
-                        else -> " ↓"
-                    }
-                    Text(
-                        k.label + arrow,
-                        color = if (on) Color.White else LdColors.TextDim,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .background(
-                                if (on) LdColors.AccentDim else LdColors.Surface2,
-                                RoundedCornerShape(16.dp)
-                            )
-                            .border(
-                                1.dp,
-                                if (on) LdColors.Accent else LdColors.Border,
-                                RoundedCornerShape(16.dp)
-                            )
-                            .clickable { sort = sort.toggle(k) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                    )
-                }
-            }
-
-            Box(Modifier.weight(1f)) {
-                if (sorted.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("这个分类下还没有文件", color = LdColors.TextFaint, fontSize = 13.sp)
-                    }
-                } else {
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(sorted, key = { it.path }) { f ->
-                            FileRow(
-                                item = f,
-                                checked = selected.contains(f.path),
-                                onToggle = { selected = toggle(selected, f.path) },
-                                onOpen = { },
-                            )
-                        }
-                        item { Spacer(Modifier.height(16.dp)) }
+                itemsIndexed(rows, key = { _, row -> row.key }) { _, row ->
+                    when (row) {
+                        is ListRow.Header -> SectionHeader(row.text)
+                        is ListRow.Empty -> EmptyHint(row.text)
+                        is ListRow.Item -> FileRow(
+                            item = row.item,
+                            checked = selected.value.contains(row.item.path),
+                            onToggle = { selected.value = toggle(selected.value, row.item.path) },
+                            onOpen = {
+                                openFile(ctx, row.item.path, row.item.mime, row.item.contentUri)
+                            },
+                        )
+                        ListRow.Bottom -> Spacer(Modifier.height(16.dp))
                     }
                 }
             }
+        }
 
-            if (selected.isNotEmpty()) {
-                val byPath = remember(sorted) { sorted.associateBy { it.path } }
-                val totalBytes = selected.mapNotNull { byPath[it] }.sumOf { it.size }
-                SendBar(
-                    count = selected.size,
-                    totalBytes = totalBytes,
-                    deviceName = selDevice?.name ?: "…",
-                    onSend = {
-                        if (devices.isEmpty()) {
-                            onNeedDevice()
-                        } else {
-                            val paths = selected.toList()
-                            if (Engine.send(paths)) selected = emptySet()
+        if (selected.value.isNotEmpty()) {
+            SendBar(
+                count = selected.value.size,
+                totalBytes = selectedBytes,
+                deviceName = selDevice?.name ?: "…",
+                busy = sending,
+                onSend = {
+                    if (devices.isEmpty()) {
+                        onNeedDevice()
+                    } else {
+                        sending = true
+                        val paths = selected.value.toList()
+                        scope.launch {
+                            val ok = withContext(Dispatchers.IO) { Engine.send(paths) }
+                            sending = false
+                            if (ok) selected.value = emptySet()
+                            else userToast(ctx, "没有可发送的文件，或设备已离线")
                         }
-                    },
-                )
-            }
+                    }
+                },
+            )
         }
     }
 }
@@ -246,7 +324,8 @@ private fun CategoryGrid(
             Column(horizontalAlignment = Alignment.End) {
                 Text("全盘扫描", color = LdColors.TextDim, fontSize = 11.sp)
                 Switch(
-                    checked = state.source == Catalog.Source.DEEP,
+                    // 扫描期间保持 ON：旧实现只等 emit 才改 source，开关会立刻弹回 OFF
+                    checked = state.scanning || state.source == Catalog.Source.DEEP,
                     onCheckedChange = onToggleScan,
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.White,
@@ -287,7 +366,7 @@ private fun CategoryGrid(
         }
         if (state.truncated) {
             Text(
-                "文件过多，仅索引了前 20 万个",
+                "文件过多：仅统计最近 ${com.landrop.transfer.storage.CatalogPolicy.LIMIT} 条索引",
                 color = LdColors.Amber,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
@@ -308,6 +387,7 @@ private fun CategoryGrid(
                     count = b?.count ?: 0,
                     bytes = b?.bytes ?: 0L,
                     loading = state.loading && state.buckets.isEmpty(),
+                    scanning = state.scanning && state.source == Catalog.Source.MEDIA && state.buckets.isNotEmpty(),
                     onClick = { if ((b?.count ?: 0) > 0) onOpen(k) },
                 )
             }
@@ -321,6 +401,7 @@ private fun CategoryCard(
     count: Int,
     bytes: Long,
     loading: Boolean,
+    scanning: Boolean,
     onClick: () -> Unit,
 ) {
     val enabled = count > 0 && !loading
@@ -339,6 +420,7 @@ private fun CategoryCard(
             when {
                 loading -> "统计中…"
                 count <= 0 -> "暂无文件"
+                scanning -> "$count 个 · ${fmtBytes(bytes)} · 扫描中"
                 else -> "$count 个 · ${fmtBytes(bytes)}"
             },
             color = if (enabled) LdColors.TextFaint else LdColors.TextFaint.copy(alpha = 0.5f),
@@ -351,5 +433,6 @@ private fun sourceLine(s: Catalog.State): String {
     val src = if (s.source == Catalog.Source.DEEP) "全盘扫描" else "媒体库索引"
     val at = if (s.generatedAt > 0) " · " + fmtTime(s.generatedAt) else ""
     val total = if (s.items.isEmpty()) "" else " · 共 ${s.items.size} 个文件"
-    return src + at + total
+    val trunc = if (s.truncated) " · 已截断" else ""
+    return src + at + total + trunc
 }
