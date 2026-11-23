@@ -12,6 +12,7 @@
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -94,6 +95,71 @@ def dismiss_dialogs():
     for _ in range(2):
         adb("shell", "input", "keyevent", "KEYCODE_BACK")
         time.sleep(0.4)
+
+
+def file_row_centers():
+    """返回列表中各文件行的中心 y（按从上到下排序）。
+
+    判定「文件行」：uiautomator 文本节点高度 ≈ 单行字号（35~70px）、
+    落在列表区域内、不是分组标题/按钮/副标题。
+    同一行的文件名与副标题间距 < 70px，跨行 >= 90px —— 据此把副标题合并掉，
+    每个真实行只保留一个中心点（取文件名与副标题的竖直中点）。
+    """
+    xml = tail_ui_dump()
+    if not xml:
+        return []
+    w, h = 1080, 2400
+    m = re.search(r'bounds="\[0,0\]\[(\d+),(\d+)\]"', xml)
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+
+    skip_words = {
+        "最近", "内部存储", "紧凑", "网格", "列表", "发送到", "全选", "反选",
+        "清空", "退出多选", "文件", "分类", "传输", "测速", "设置", "今天", "昨天",
+    }
+    nodes = []
+    for mm in re.finditer(r'<node[^>]*text="([^"]+)"[^>]*bounds="([^"]*)"', xml):
+        text = mm.group(1).strip()
+        if not text or text in skip_words:
+            continue
+        if text.startswith("已选") or text.startswith("未发现设备") or text.startswith("发送到"):
+            continue
+        # 分组标题形如 "11月22日" / "11月21日"
+        if re.fullmatch(r"(\d+月\d+日|\d+年\d+月\d+日)", text):
+            continue
+        nums = [int(x) for x in re.findall(r"-?\d+", mm.group(2))]
+        if len(nums) != 4:
+            continue
+        x1, y1, x2, y2 = nums
+        hh = y2 - y1
+        if hh < 35 or hh > 70:
+            continue
+        if y1 < int(h * 0.14) or y1 > int(h * 0.78):
+            continue
+        nodes.append(((y1 + y2) // 2, " · " in text))
+
+    if not nodes:
+        return []
+    nodes.sort()
+    centers = []
+    for cy, is_sub in nodes:
+        if is_sub and centers and abs(cy - centers[-1]) < 70:
+            continue          # 与上一个文件名属同一行，跳过
+        centers.append(cy)
+    # 合并相邻过近的（防重复计数）
+    merged = []
+    for cy in centers:
+        if not merged or cy - merged[-1] >= 90:
+            merged.append(cy)
+    return merged
+
+
+def find_row_center_by_text(exclude_texts=()):
+    """挑出「第二个文件行」的中心点，返回 (gutter 列 x, y)。"""
+    centers = file_row_centers()
+    if len(centers) < 2:
+        return None
+    return (1002, centers[1])
 
 
 def sendbar_visible(img):
@@ -180,16 +246,35 @@ def run_select_tests():
     check("单击 gutter 选中 1 行", selected_count(img) == 1 and sendbar_visible(img),
           f"count={selected_count(img)} bar={sendbar_visible(img)}")
 
-    # 再选一行 -> 2 行
-    adb("shell", "input", "tap", "1002", "520")
-    time.sleep(0.6)
+    # 再选一行 -> 2 行。
+    #
+    # ⚠️ 踩过的坑：不能写死第二个 y 坐标。最近列表内容会变（新增文件会把分组
+    # 标题顶走、分组数量变化、有空分组被过滤），写死 y=520 会落到"分区分界
+    # 空白"上 —— 那次点击不命中任何行，断言就假失败（实测稳定复现）。
+    # 也不适合用像素找圆圈：分组标题会改变行间距，扫列不稳。
+    #
+    # 可靠做法：**用 uiautomator 里该行的文本节点取中心点**，点它的 gutter 列。
+    row2 = find_row_center_by_text(exclude_texts=("今天", "昨天"))
+    if row2:
+        adb("shell", "input", "tap", str(row2[0]), str(row2[1]))
+    else:
+        # 兜底：第一行中心 378，行高 165px → 下一行 543
+        adb("shell", "input", "tap", "1002", "543")
+    time.sleep(0.7)
     shot("03-two-selected.png")
     img = open_img(os.path.join(OUT, "03-two-selected.png"))
     n2 = selected_count(img)
     check("再选一行 -> 2 行", n2 == 2, f"count={n2}")
 
-    # 关键回归：从已选中行往下拖 => 取消选中（DESELECT）
-    adb("shell", "input", "swipe", "1002", "378", "1002", "520", "400")
+    # 关键回归：从已选中行往下拖 => 取消选中（DESELECT）。
+    # 同样不能写死坐标：起点必须是"第一行 gutter 中心"，终点要覆盖到第二行。
+    # 用 uiautomator 拿两行的真实 y，避免落到分组标题上（拖选只剩 1 项那种假失败）。
+    ys = file_row_centers()
+    if ys and len(ys) >= 2:
+        y_from, y_to = ys[0], ys[1]
+    else:
+        y_from, y_to = 414, 664        # 1080x2400 实测：第一行 ~414，第二行 ~664
+    adb("shell", "input", "swipe", "1002", str(y_from), "1002", str(y_to), "400")
     time.sleep(0.8)
     shot("04-drag-deselect.png")
     img = open_img(os.path.join(OUT, "04-drag-deselect.png"))
