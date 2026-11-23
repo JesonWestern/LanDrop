@@ -22,7 +22,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
@@ -67,7 +66,7 @@ fun SpeedScreen(speed: SpeedUi, devices: List<DeviceInfo>, onNeedDevice: () -> U
                         val s = d.id == sel?.id
                         Text(
                             d.name,
-                            color = if (s) Color.White else LdColors.TextDim,
+                            color = if (s) LdColors.OnAccent else LdColors.TextDim,
                             fontSize = 11.5.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -92,7 +91,7 @@ fun SpeedScreen(speed: SpeedUi, devices: List<DeviceInfo>, onNeedDevice: () -> U
                 val s = speed.dir == mode
                 Text(
                     label,
-                    color = if (s) Color.White else LdColors.TextDim,
+                    color = if (s) LdColors.OnAccent else LdColors.TextDim,
                     fontSize = 12.5.sp,
                     modifier = Modifier
                         .background(
@@ -167,6 +166,9 @@ fun SpeedScreen(speed: SpeedUi, devices: List<DeviceInfo>, onNeedDevice: () -> U
 
 @Composable
 private fun SpeedChart(samples: List<Double>, modifier: Modifier = Modifier) {
+    // Canvas 的 DrawScope 不是组合作用域，颜色先在组合里取好
+    val accent = LdColors.Accent
+    val border = LdColors.Border
     Box(
         modifier.background(LdColors.Surface2, RoundedCornerShape(10.dp)),
         contentAlignment = Alignment.Center,
@@ -190,7 +192,7 @@ private fun SpeedChart(samples: List<Double>, modifier: Modifier = Modifier) {
             }
             drawPath(
                 path,
-                color = LdColors.Accent,
+                color = accent,
                 style = Stroke(width = 2.0f),
             )
             // 填充
@@ -200,9 +202,9 @@ private fun SpeedChart(samples: List<Double>, modifier: Modifier = Modifier) {
                 lineTo(0f, size.height)
                 close()
             }
-            drawPath(fill, color = LdColors.Accent.copy(alpha = 0.15f))
+            drawPath(fill, color = accent.copy(alpha = 0.15f))
             drawLine(
-                color = LdColors.Border,
+                color = border,
                 start = Offset(0f, size.height),
                 end = Offset(size.width, size.height),
                 strokeWidth = 1f,

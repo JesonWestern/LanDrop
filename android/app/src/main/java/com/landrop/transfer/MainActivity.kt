@@ -3,6 +3,7 @@ package com.landrop.transfer
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -12,8 +13,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.landrop.transfer.core.Engine
 import com.landrop.transfer.share.ShareIntake
+import com.landrop.transfer.storage.Catalog
+import com.landrop.transfer.storage.FileRepo
 import com.landrop.transfer.ui.LanDropApp
 import com.landrop.transfer.ui.LanDropTheme
+import com.landrop.transfer.ui.Motion
+import com.landrop.transfer.ui.ThemeStore
+import androidx.compose.ui.graphics.toArgb
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -29,6 +37,15 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         Engine.init(applicationContext)
         Engine.start(applicationContext)
+
+        // 主题要在 setContent 之前就已知晓，用来给 window 设底色 —— 否则冷启动第一帧是系统白/黑，
+        // 换主题后尤其明显（纯白主题会白闪，纯黑主题会黑闪）。
+        ThemeStore.init(applicationContext)
+        runCatching {
+            window.setBackgroundDrawable(ColorDrawable(ThemeStore.peekBg(this).toArgb()))
+        }
+        FileRepo.warm(applicationContext)
+        Catalog.warm(applicationContext)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -58,6 +75,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // 用户可能刚从系统设置里改了"动画时长缩放"，丢掉缓存重新判断
+        Motion.invalidate()
         // 保证服务在跑（用户可能从最近任务里回来）
         runCatching { com.landrop.transfer.service.TransferService.start(this) }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) requestLegacyStoragePermissions()

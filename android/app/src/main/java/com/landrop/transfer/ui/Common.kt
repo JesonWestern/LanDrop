@@ -59,7 +59,13 @@ fun fmtTime(ms: Long): String {
     return f.format(Date(ms))
 }
 
-/** 文件类型 → 图标配色。颜色只作辅助，灰度下靠剪影区分。 */
+/**
+ * 文件类型 → 图标配色。颜色只作辅助，灰度下靠剪影区分。
+ *
+ * 注意：必须是 `@Composable`（主题色改为运行期取色后，这里要读当前调色板）。
+ * 所有调用点原本就在组合作用域内，因此不需要改动调用方式。
+ */
+@Composable
 fun kindColor(k: FileKind): Color = when (k) {
     FileKind.IMAGE -> LdColors.Green
     FileKind.VIDEO -> LdColors.Purple

@@ -175,7 +175,7 @@ fun ShareSendDialog(
                                         colors = CheckboxDefaults.colors(
                                             checkedColor = LdColors.Accent,
                                             uncheckedColor = LdColors.Border2,
-                                            checkmarkColor = Color.White,
+                                            checkmarkColor = LdColors.OnAccent,
                                         ),
                                     )
                                     Dot(

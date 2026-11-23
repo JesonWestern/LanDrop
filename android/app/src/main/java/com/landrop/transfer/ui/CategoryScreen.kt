@@ -212,7 +212,7 @@ fun CategoryScreen(devices: List<DeviceInfo>, onNeedDevice: () -> Unit) {
                 }
                 Text(
                     k.label + arrow,
-                    color = if (on) Color.White else LdColors.TextDim,
+                    color = if (on) LdColors.OnAccent else LdColors.TextDim,
                     fontSize = 12.sp,
                     modifier = Modifier
                         .background(
