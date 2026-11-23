@@ -97,16 +97,24 @@ def dismiss_dialogs():
 
 
 def sendbar_visible(img):
-    """发送条可见性：底部 y 附近有一排 Accent 蓝文字（全选/反选/清空）。"""
+    """发送条可见性：在底部 ~200dp 高度范围内找一排 Accent 蓝文字（全选/反选/清空）。
+
+    之前把 y 写死成 h*0.832，但发送条实际随底部栏/导航栏 padding 浮动
+    （1080x2400 实测在 y≈1710–1790，不是 1997）。这里改为在底部 8%~22% 区间竖向
+    扫描、任一高度命中足够多蓝色像素即判可见，避免坐标漂移导致假失败。
+    """
     px = img.load()
     w, h = img.size
-    y = int(h * 0.832)  # 1080x2400 下约 1997
-    cnt = 0
-    for x in range(0, int(w * 0.42)):
-        c = px[x, y]
-        if c[2] > 150 and c[2] - c[0] > 45:
-            cnt += 1
-    return cnt > 20
+    xmax = int(w * 0.42)
+    for y in range(int(h * 0.71), int(h * 0.80)):
+        cnt = 0
+        for x in range(0, xmax):
+            c = px[x, y]
+            if c[2] > 150 and c[2] - c[0] > 45:
+                cnt += 1
+        if cnt > 20:
+            return True
+    return False
 
 
 def selected_count(img):
@@ -133,8 +141,34 @@ def metrics():
     return r.stdout.strip()
 
 
+def ensure_recent_list_state():
+    """把文件页收敛到「最近 + 列表视图 + 无壁纸」，让选择套件的坐标与断言可复现。
+
+    为什么需要这步：前面的性能/主题实验会改 `fileTab`（变成 storage）和
+    `themeWallpaper`（变成 custom）。页签不同，行高与 gutter 坐标就全错——
+    实测会导致"单击 gutter 选中 1 行 → count=0"这种假失败。
+    这里不碰 prefs（run-as 引号嵌套容易失败），而是用 UI 操作把状态摆正。
+    """
+    # 进设置页找「清除壁纸」，再回文件页点「最近」
+    launch()
+    c = find_text_center("设置")
+    if c:
+        adb("shell", "input", "tap", str(c[0]), str(c[1]))
+        time.sleep(1.0)
+    if tap_text("清除壁纸"):
+        time.sleep(0.6)
+    # 回到文件页并选「最近」
+    c = find_text_center("文件")
+    if c:
+        adb("shell", "input", "tap", str(c[0]), str(c[1]))
+        time.sleep(0.8)
+    if tap_text("最近"):
+        time.sleep(0.8)
+
+
 def run_select_tests():
     log("\n[A] 选择能力：单选 / 拖选取消 / 全选 / 反选 / 清空")
+    ensure_recent_list_state()
     adb("shell", "am", "force-stop", PKG)
     time.sleep(0.5)
     adb("shell", "am", "start", "-n", f"{PKG}/.MainActivity")

@@ -59,8 +59,12 @@ object ThumbCache {
         }
     }
 
+    /**
+     * 缓存键。base 部分（`path|mtime|size`）已在 `FileItem` 构造时预拼好，
+     * 这里只追加像素档位，避免每次调用重建整串（一行 3 次 × 200 行的热点）。
+     */
     fun keyOf(item: FileItem, targetPx: Int = TARGET_PX): String =
-        "${item.path}|${item.mtime}|${item.size}|$targetPx"
+        "${item.thumbKeyBase}|$targetPx"
 
     fun cached(item: FileItem, targetPx: Int = TARGET_PX): ImageBitmap? =
         runCatching { cache.get(keyOf(item, targetPx)) }.getOrNull()

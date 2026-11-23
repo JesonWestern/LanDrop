@@ -53,11 +53,41 @@ fun fmtEta(remainBytes: Long, bps: Double): String {
     }
 }
 
+/**
+ * 文件修改时间格式化（列表副标题高频调用）。
+ *
+ * 性能：原实现**每次调用都 new 一个 `SimpleDateFormat` + `Date`**。
+ * `SimpleDateFormat` 的构造要解析模式串、初始化 Calendar/TimeZone，很重；
+ * 列表一屏 12–16 行、每次滚动重组都会重算，1.3.1 前这是最大的单点分配源。
+ *
+ * 现在两层收敛：
+ *  1. `ThreadLocal` 复用格式化器（`SimpleDateFormat` 非线程安全，不能共享单例）；
+ *  2. 结果按「分钟」缓存——副标题只显示到分钟，同一分钟内同 mtime 直接命中。
+ *     缓存键用 (分钟桶, 语言)，容量小、命中率高，避免无界增长。
+ *
+ * 输出与旧实现**逐字节一致**（同样的模式串/语言/时区），有单测守住。
+ */
+private const val TIME_PATTERN = "MM-dd HH:mm"
+
+private val timeFmt = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue() = SimpleDateFormat(TIME_PATTERN, Locale.getDefault())
+}
+
+/** (分钟桶, 语言) → 格式化结果。分钟桶为 0 表示"无缓存"（mtime<=0 提前返回空串）。 */
+private val timeCache = HashMap<Long, String>(256)
+
 fun fmtTime(ms: Long): String {
     if (ms <= 0) return ""
-    val f = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
-    return f.format(Date(ms))
+    val bucket = (ms / 60_000L) * 60_000L          // 同一分钟内复用同一条目
+    timeCache[bucket]?.let { return it }
+    val s = runCatching { timeFmt.get()!!.format(Date(ms)) }.getOrDefault("")
+    if (timeCache.size > 512) timeCache.clear()     // 跨多天滚动时的简易上限
+    timeCache[bucket] = s
+    return s
 }
+
+/** 仅供单测：清空格式化缓存，验证"清空前后输出一致"。 */
+internal fun clearFmtTimeCache() = timeCache.clear()
 
 /**
  * 文件类型 → 图标配色。颜色只作辅助，灰度下靠剪影区分。

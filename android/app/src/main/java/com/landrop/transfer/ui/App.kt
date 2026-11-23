@@ -163,19 +163,14 @@ fun LanDropApp() {
                 AnimatedContent(
                     targetState = tab,
                     transitionSpec = {
-                        // 新 tab 序号更大 → 从右滑入；否则从左滑入
-                        val dir = if (targetState > initialState) {
-                            AnimatedContentTransitionScope.SlideDirection.Left
-                        } else {
-                            AnimatedContentTransitionScope.SlideDirection.Right
-                        }
-                        val spec = tween<IntOffset>(
-                            tabAnimMs, easing = FastOutSlowInEasing
-                        )
+                        // 性能取舍（1.3.1 实测）：原实现用 slide + fade + SizeTransform(clip=false)。
+                        // framestats 显示切到「设置」页的最慢帧里 draw 段高达 273ms，
+                        // 而把动画关掉后同一帧 draw 只有 9.6ms——说明这 270ms 基本是
+                        // AnimatedContent 为"不裁剪的尺寸变换 + 滑动"建立离屏层并重绘两块内容。
+                        // 现在只保留 fade（短程、无位移），不再随页面大小线性放大绘制成本。
+                        // 视觉上仍是"淡入淡出"的页面切换，动画特性仍在（可关）。
                         val fadeMs = tween<Float>(tabAnimMs, easing = FastOutSlowInEasing)
-                        (slideIntoContainer(dir, animationSpec = spec) + fadeIn(fadeMs))
-                            .togetherWith(fadeOut(fadeMs))
-                            .using(SizeTransform(clip = false))
+                        fadeIn(fadeMs).togetherWith(fadeOut(fadeMs))
                     },
                     label = "tabContent",
                 ) { t ->

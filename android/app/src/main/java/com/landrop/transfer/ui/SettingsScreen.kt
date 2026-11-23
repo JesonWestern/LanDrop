@@ -20,10 +20,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
@@ -101,21 +100,27 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
         if (permitted) Catalog.warm(ctx)
     }
 
-    Column(
+    // 用 LazyColumn 而不是 Column+verticalScroll：
+    // 设置页 8 个分组 / 29 处 Text / 10 预设色块 + 12 色点 + Slider 全量组合要 120~210ms
+    // （实测：切到设置页最慢帧 input 段 216ms；设置页自身滚动掉帧 28.9%）。
+    // LazyColumn 只组合屏幕内的分组，首帧成本随可视高度而非总长度增长。
+    LazyColumn(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
     ) {
-        Text(
-            "设置",
-            color = LdColors.Text,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(top = 12.dp, bottom = 12.dp),
-        )
+        item(key = "title") {
+            Text(
+                "设置",
+                color = LdColors.Text,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 12.dp, bottom = 12.dp),
+            )
+        }
 
-        Section("外观") {
+        item(key = "appearance") {
+            Section("外观") {
             // ---- 1. 主题预设：10 个色块，5 列 2 行 ----
             Text("主题预设", color = LdColors.TextDim, fontSize = 12.5.sp)
             Spacer(Modifier.height(8.dp))
@@ -220,8 +225,10 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                 lineHeight = 16.sp,
             )
         }
+        }
 
-        Section("本机") {
+        item(key = "local") {
+            Section("本机") {
             Text("设备名称（对方看到的名字）", color = LdColors.TextFaint, fontSize = 11.5.sp)
             Spacer(Modifier.height(6.dp))
             OutlinedTextField(
@@ -258,8 +265,10 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                 fontSize = 10.5.sp,
             )
         }
+        }
 
-        Section("传输") {
+        item(key = "transfer") {
+            Section("传输") {
             StepperRow("并发连接数", conns, 1, 6) {
                 conns = it
                 Engine.settings.dataConns = it
@@ -293,8 +302,10 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                 }
             }
         }
+        }
 
-        Section("文件索引") {
+        item(key = "index") {
+            Section("文件索引") {
             SwitchRow("全盘深度扫描", deepScan) {
                 deepScan = it
                 Catalog.setDeepScan(ctx, it)
@@ -325,8 +336,10 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                 Pill("重新扫描", primary = true) { Catalog.rescan(ctx); uiRev++ }
             }
         }
+        }
 
-        Section("存储") {
+        item(key = "storage") {
+            Section("存储") {
             Text("接收目录", color = LdColors.TextDim, fontSize = 12.5.sp)
             Spacer(Modifier.height(4.dp))
             Text(
@@ -337,8 +350,10 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                 lineHeight = 17.sp,
             )
         }
+        }
 
-        Section("测速") {
+        item(key = "speed") {
+            Section("测速") {
             StepperRow("并发连接数", speedConns, 1, 8) {
                 speedConns = it
                 Engine.settings.speedConns = it
@@ -348,8 +363,10 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                 Engine.settings.speedSecs = it
             }
         }
+        }
 
-        Section("权限") {
+        item(key = "perm") {
+            Section("权限") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Dot(if (permitted) LdColors.Green else LdColors.Red, 7.dp)
                 Spacer(Modifier.width(8.dp))
@@ -377,8 +394,10 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
                 }
             }
         }
+        }
 
-        Section("关于") {
+        item(key = "about") {
+            Section("关于") {
             Text("内网快传 LanDrop 1.3.0", color = LdColors.Text, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             Text(
@@ -391,7 +410,8 @@ fun SettingsScreen(devices: List<DeviceInfo>) {
             )
         }
 
-        Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(24.dp))
+        }
     }
 }
 

@@ -102,9 +102,34 @@ data class FileItem(
     /** MediaStore content uri（媒体库来源才有）；缩略图可走系统 loadThumbnail。 */
     val contentUri: String = "",
 ) {
+    /**
+     * 文件类型。**惰性缓存**——原来是 `get() = FileKind.of(...)` 的每访问即重算：
+     * `FileKind.of` 内含 `substringAfterLast('/')`/`substringAfterLast('.')`/`lowercase()`
+     * 三次字符串操作 + HashMap 查找。而同一行里它至少被访问 2 次
+     * （`FileListWidgets` 取 tint 一次、传 `kind` 一次），`ThumbCache` 判类型再 1 次；
+     * 分类页 `CatalogPolicy.buckets` 对全部 5900 条再各调一次。
+     *
+     * 用 `lazy` 而不是构造参数，是为了**不改变构造签名/`equals`/`copy` 语义**：
+     * 惰性字段不进构造参数，`copy()` 产生的新实例会重新懒算，不会带上旧缓存。
+     * `lazy` 默认 SYNCHRONIZED，可安全跨线程（列表在 UI 读、分类在 IO 算）。
+     */
+    private val kindLazy: Lazy<FileKind> =
+        lazy(LazyThreadSafetyMode.PUBLICATION) {
+            if (isDir) FileKind.OTHER else FileKind.of(name, mime.ifEmpty { null })
+        }
+
     /** 目录没有文件类型；文件按扩展名（mime 兜底）判定。 */
     val kind: FileKind
-        get() = if (isDir) FileKind.OTHER else FileKind.of(name, mime.ifEmpty { null })
+        get() = kindLazy.value
+
+    /**
+     * 缩略图缓存键的公共前缀（`path|mtime|size`），**构造时算一次**。
+     *
+     * 原实现 `ThumbCache.keyOf` 每次调用都拼 `"${path}|${mtime}|${size}|$px"`，
+     * 而一行里 `cached()` / `shouldLoad()` / `load()` 各拼一次 → 200 行约 600 次字符串构建/帧。
+     * 这里预拼前缀，`keyOf` 只需拼上像素档位。
+     */
+    val thumbKeyBase: String = "$path|$mtime|$size"
 }
 
 data class SpeedUi(
