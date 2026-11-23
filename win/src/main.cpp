@@ -93,11 +93,23 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         MessageBoxW(nullptr, L"GDI+ 初始化失败，无法启动界面。", L"内网快传", MB_ICONERROR);
         return 2;
     }
+    // 必须在 GDI+ 启动之后：ApplyTheme 会清空 GDI+ 画刷/画笔缓存
+    th::Init();
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 
     cfg::Load();
     logx::Init();
-    th::Init();
+    // 刻意在 cfg::Load + th::Init + GdiplusStartup 之后应用主题（清缓存涉及 GDI+ 对象）
+    th::ApplyFromConfig();
+    {
+        const th::ThemeSpec& ts = th::CurrentSpec();
+        th::ThemeSpec tsc = ts;  // toAccentDk() 按规格是非 const 成员
+        logx::Line("theme: id=%s light=%d accent=%08X dk=%s scrim=%d anim=%d wallpaper=%s",
+                   util::Narrow(ts.id).c_str(), th::g_pal.light ? 1 : 0, (unsigned int)th::cAccent,
+                   util::Narrow(tsc.toAccentDk()).c_str(), th::g_scrim,
+                   g_app.cfg.themeAnimations ? 1 : 0,
+                   ts.wallpaperPath.empty() ? "(none)" : util::Narrow(ts.wallpaperPath).c_str());
+    }
     jobs::Init();
 
     logx::Line("==== LanDrop %s starting ====", LANDROP_VERSION_A);

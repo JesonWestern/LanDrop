@@ -10,8 +10,8 @@
 #include <vector>
 
 // ---- 版本 -----------------------------------------------------------------
-#define LANDROP_VERSION_W   L"1.1.0"
-#define LANDROP_VERSION_A   "1.1.0"
+#define LANDROP_VERSION_W   L"1.3.0"
+#define LANDROP_VERSION_A   "1.3.0"
 #define LANDROP_APP_NAME    L"内网快传 LanDrop"
 #define LANDROP_WND_CLASS   L"LanDropMainWnd"
 #define LANDROP_MUTEX_NAME  L"LanDropSingleInstance_v1"
@@ -26,6 +26,7 @@
 
 #define TIMER_UI           1              // 200ms / 100ms 自适应
 #define TIMER_RETRY        2
+#define TIMER_ANIM         3              // 页签切换动画（16ms ≈ 60fps）
 
 // ---- 命令 ID --------------------------------------------------------------
 enum : UINT {
@@ -155,7 +156,7 @@ struct JobView {
 
 // ---- 配置 -----------------------------------------------------------------
 struct AppConfig {
-    int cfgver = 1;
+    int cfgver = 2;
     std::wstring deviceId;      // 持久化随机 UUID
     std::wstring deviceName;
     std::wstring saveDir;       // 接收落盘目录
@@ -171,6 +172,12 @@ struct AppConfig {
     int listenPort = proto::kTransferPort;
     int discoverPort = proto::kDiscoverPort;
     std::vector<std::wstring> trustedIds;
+    // ---- 外观（v2 新增）------------------------------------------------
+    std::wstring theme = L"graphite";   // 预设 id，与 Android LdPalettes 一致
+    uint32_t themeAccent = 0;           // 0 = 用预设自带强调色
+    std::wstring themeWallpaper;        // 壁纸路径（空 = 无）
+    int themeScrim = 55;                // 壁纸暗化强度 0..80
+    bool themeAnimations = true;        // 页签切换动画
 };
 
 struct AppState {

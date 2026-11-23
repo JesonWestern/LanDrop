@@ -1,6 +1,7 @@
 #include "app.h"
 #include "json.h"
 #include "protocol.h"
+#include "theme.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -99,12 +100,108 @@ int SelfTest() {
         util::Narrow(k1).c_str());
     if (!kOk) ++fail;
 
+    // 5) 主题：预设 id 往返 / 未知回落 / EaseOutCubic / accent 派生 / 配置非法值
+    {
+        const auto presets = th::Presets();
+        bool countOk = presets.size() == 10;
+        bool idsOk = countOk;
+        for (size_t i = 0; i < presets.size(); ++i) {
+            // 每个 id 都必须能被归一化回自己（往返一致）
+            if (th::NormalizeThemeId(presets[i].first) != presets[i].first) idsOk = false;
+            if (presets[i].second.empty()) idsOk = false;
+        }
+        bool orderOk = !presets.empty() && presets.front().first == L"graphite" &&
+                       presets.front().second == L"石墨灰";
+        Out("{\"step\":\"theme_presets\",\"ok\":%s,\"count\":%d}",
+            (countOk && idsOk && orderOk) ? "true" : "false", (int)presets.size());
+        if (!(countOk && idsOk && orderOk)) ++fail;
+
+        // 未知 id 必须回落 graphite
+        const bool fallbackOk =
+            th::NormalizeThemeId(L"no-such-theme") == L"graphite" &&
+            th::NormalizeThemeId(L"") == L"graphite" &&
+            th::NormalizeThemeId(L"GRAPHITE") == L"graphite";
+        Out("{\"step\":\"theme_fallback\",\"ok\":%s}", fallbackOk ? "true" : "false");
+        if (!fallbackOk) ++fail;
+
+        // EaseOutCubic 端点与单调性
+        bool easeOk = th::EaseOutCubic(0.0f) == 0.0f && th::EaseOutCubic(1.0f) == 1.0f;
+        float prev = -1.0f;
+        for (int i = 0; i <= 32; ++i) {
+            const float v = th::EaseOutCubic((float)i / 32.0f);
+            if (v < prev || v > 1.0001f) easeOk = false;
+            prev = v;
+        }
+        Out("{\"step\":\"ease_out_cubic\",\"ok\":%s}", easeOk ? "true" : "false");
+        if (!easeOk) ++fail;
+
+        // accent 派生前景色：亮蓝 accent 应得黑字，深蓝 accent 得白字；accentDk 由 isLight 决定
+        const uint32_t lightAccent = 0xFF9BE7FFu;  // 很亮 → 前景黑
+        const uint32_t darkAccent = 0xFF12315Au;   // 很暗 → 前景白
+        const bool onDarkOk = th::OnAccentFor(lightAccent) == 0xFF000000u;
+        const bool onLightOk = th::OnAccentFor(darkAccent) == 0xFFFFFFFFu;
+        const th::Palette pDark = th::PaletteOf(L"graphite", 0);
+        const th::Palette pLight = th::PaletteOf(L"white", 0);
+        const bool dkOk = th::AccentDkFor(pDark.accent, false) == th::Shade(pDark.accent, 0.62f) &&
+                          th::AccentDkFor(pLight.accent, true) == th::Shade(pLight.accent, 0.82f);
+        Out("{\"step\":\"accent_derive\",\"ok\":%s}", (onDarkOk && onLightOk && dkOk) ? "true" : "false");
+        if (!(onDarkOk && onLightOk && dkOk)) ++fail;
+
+        // 全部 10 个预设都能派生出一致、合法的调色板（accent 复用/覆盖都走同一条路径）
+        bool paletteOk = true;
+        for (const auto& p : presets) {
+            const th::Palette pal = th::PaletteOf(p.first, 0);
+            if ((pal.accent >> 24) != 0xFF || (pal.onAccent != 0xFF000000u &&
+                                               pal.onAccent != 0xFFFFFFFFu)) {
+                paletteOk = false;
+            }
+            if (pal.light != (p.first == L"white" || p.first == L"silver" || p.first == L"mint")) {
+                paletteOk = false;
+            }
+        }
+        // 用户自选 accent 时应覆盖预设、且 accent 外的字段保持不变
+        const th::Palette over = th::PaletteOf(L"ocean", 0xFFF2649Au);
+        if (over.accent != 0xFFF2649Au) paletteOk = false;
+        const th::Palette base = th::PaletteOf(L"ocean", 0);
+        if (over.bg != base.bg || over.text != base.text) paletteOk = false;
+        Out("{\"step\":\"theme_palette\",\"ok\":%s}", paletteOk ? "true" : "false");
+        if (!paletteOk) ++fail;
+
+        // 主题配置非法值回落：scrim 越界被夹到 0..80，未知 id 回落 graphite
+        const bool clampOk = th::ClampScrim(-40) == 0 && th::ClampScrim(9999) == 80 &&
+                             th::ClampScrim(55) == 55;
+        th::ThemeSpec bad;
+        bad.id = L"garbage";
+        bad.scrim = 12345;
+        bool applyOk = th::ApplyTheme(bad);
+        applyOk = applyOk && th::CurrentSpec().id == L"graphite" &&
+                  th::CurrentSpec().scrim == 80 && th::cBg == th::PaletteOf(L"graphite", 0).bg;
+        // 恢复默认，别把 selftest 的状态泄漏出去
+        th::ThemeSpec def;
+        def.id = L"graphite";
+        def.scrim = 55;
+        th::ApplyTheme(def);
+        Out("{\"step\":\"theme_config_clamp\",\"ok\":%s}", (clampOk && applyOk) ? "true" : "false");
+        if (!(clampOk && applyOk)) ++fail;
+
+        // 派生 accentDk 的文本形态（ThemeSpec::toAccentDk 必须与 Palette 一致）
+        th::ThemeSpec ts;
+        ts.id = L"graphite";
+        const std::string dk = util::Narrow(ts.toAccentDk());
+        const th::Palette gpal = th::PaletteOf(L"graphite", 0);
+        char want[16];
+        snprintf(want, sizeof(want), "%08X", (unsigned int)gpal.accentDk);
+        const bool dkTextOk = dk == want;
+        Out("{\"step\":\"accent_dk_text\",\"ok\":%s,\"value\":\"%s\"}", dkTextOk ? "true" : "false",
+            dk.c_str());
+        if (!dkTextOk) ++fail;
+    }
+
     Out("{\"result\":\"%s\",\"failed\":%d}", fail == 0 ? "pass" : "fail", fail);
     return fail == 0 ? 0 : 1;
 }
 
-int Discover(int secs) {
-    g_app.headless = true;
+int Discover(int secs) {    g_app.headless = true;
     disc::Start();
     const uint64_t t0 = util::NowMs();
     std::vector<Device> last;
@@ -240,14 +337,30 @@ int SpeedTest(const std::wstring& ipText, int dirMode, int secs, int conns, int 
 
 bool IsSwitch(const wchar_t* a) { return a && a[0] == L'-'; }
 
+// --dpi N：强制 DPI 缩放（仅测试用）。GUI/CLI 两条路径都先应用它。
+void ApplyDpiArg(int argc, wchar_t** argv) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (wcscmp(argv[i], L"--dpi") == 0) {
+            int v = _wtoi(argv[i + 1]);
+            if (v >= 72 && v <= 480) {
+                th::g_dpiForce = v;
+                th::g_dpi = v;
+            }
+            return;
+        }
+    }
+}
+
 }  // namespace
 
 int Run(int argc, wchar_t** argv) {
+    ApplyDpiArg(argc, argv);
+
     bool hasCli = false;
     for (int i = 1; i < argc; ++i) {
         const std::wstring a = argv[i];
         if (a.rfind(L"--", 0) == 0 &&
-            a != L"--send-many" && a != L"--tray") {
+            a != L"--send-many" && a != L"--tray" && a != L"--dpi") {
             hasCli = true;
             break;
         }
@@ -277,6 +390,22 @@ int Run(int argc, wchar_t** argv) {
         if (a == L"--version") {
             Out("{\"name\":\"LanDrop\",\"version\":\"%s\",\"protocol\":%d}", LANDROP_VERSION_A,
                 proto::kProtoVersion);
+            return 0;
+        }
+        if (a == L"--help" || a == L"-h") {
+            Out("LanDrop %s 命令行（JSON 行输出，供脚本与自测使用）", LANDROP_VERSION_A);
+            Out("");
+            Out("  --selftest            协议/主题断言，末行 {\"result\":\"pass|fail\",\"failed\":N}");
+            Out("  --version             版本与协议号");
+            Out("  --discover [--secs N] 发现局域网设备，默认 5 秒");
+            Out("  --serve [--dir D] [--port P]  接收端服务模式（无界面，自动接收）");
+            Out("  --send IP [路径…] [--port P]  发送文件/文件夹");
+            Out("  --speedtest IP [--dir up|down|both] [--secs N] [--conns N] [--port P]");
+            Out("  --install-firewall / --setup-ctxmenu / --uninstall-ctxmenu");
+            Out("  --dpi N               强制界面 DPI 缩放（72..480，仅测试用，不写配置）");
+            Out("  --help                本帮助");
+            Out("");
+            Out("不带以上参数时启动图形界面。");
             return 0;
         }
     }

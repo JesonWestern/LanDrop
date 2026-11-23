@@ -29,6 +29,32 @@ int speedDir = 2;
 std::vector<double> speedSamples;
 std::wstring statusLine;
 
+// ---- 非客户区配色 -------------------------------------------------------
+namespace {
+inline COLORREF RgbOf(uint32_t argb) {
+    return RGB((BYTE)((argb >> 16) & 0xFF), (BYTE)((argb >> 8) & 0xFF), (BYTE)(argb & 0xFF));
+}
+}  // namespace
+
+// DWM 非客户区配色：深/浅由 g_pal.light 决定，颜色全部取自当前调色板。
+// 老系统不支持 DWMWA_CAPTION_COLOR(35)/TEXT_COLOR(36)/BORDER_COLOR(34)，失败忽略即可。
+void ApplyTitleBar(HWND hwnd) {
+    if (!hwnd) return;
+    BOOL dark = th::g_pal.light ? FALSE : TRUE;
+    if (FAILED(DwmSetWindowAttribute(hwnd, 20 /*USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof(dark)))) {
+        DwmSetWindowAttribute(hwnd, 19 /*旧编号，Win10 1809 以前*/, &dark, sizeof(dark));
+    }
+    COLORREF cap = RgbOf(th::g_pal.bg);
+    DwmSetWindowAttribute(hwnd, 35, &cap, sizeof(cap));   // DWMWA_CAPTION_COLOR
+    COLORREF txt = RgbOf(th::g_pal.text);
+    DwmSetWindowAttribute(hwnd, 36, &txt, sizeof(txt));   // DWMWA_TEXT_COLOR
+    COLORREF bd = RgbOf(th::g_pal.border);
+    DwmSetWindowAttribute(hwnd, 34, &bd, sizeof(bd));     // DWMWA_BORDER_COLOR
+    // 边框/标题栏变了要重绘非客户区
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                                             SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
 namespace {
 
 HDC g_memDC = nullptr;
@@ -72,26 +98,125 @@ void FreeBackbuffer() {
     g_bw = g_bh = 0;
 }
 
-void DarkTitle(HWND hwnd) {
-    BOOL dark = TRUE;
-    if (FAILED(DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark)))) {
-        DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
+// ---- 页签切换动画 -------------------------------------------------------
+// 内容区的 32bpp DIB 快照：动画期先画新内容，再用 GdiAlphaBlend 按 EaseOutCubic 的
+// 全局 alpha 把旧快照叠上去（并横向位移 24dp）。用 DIB + AlphaBlend 而不是 GDI+ 的
+// ColorMatrix，是因为前者的"整体透明度"语义确定，不受位图 alpha 通道里残留 0 的影响。
+HDC g_animDC = nullptr;        // 快照 DC（DIB section）
+HBITMAP g_animBmp = nullptr;   // 快照位图
+HGDIOBJ g_animOld = nullptr;
+int g_animW = 0;
+int g_animH = 0;
+RECT g_animRect{0, 0, 0, 0};   // 快照在客户区里的位置
+bool g_animOn = false;
+uint64_t g_animStart = 0;
+constexpr int kAnimMs = 180;
+
+void FreeAnimSnapshot() {
+    if (g_animDC) {
+        if (g_animOld) SelectObject(g_animDC, g_animOld);
+        DeleteDC(g_animDC);
     }
-    COLORREF cap = RGB(0x10, 0x12, 0x15);
-    DwmSetWindowAttribute(hwnd, 35, &cap, sizeof(cap));  // DWMWA_CAPTION_COLOR
-    COLORREF txt = RGB(0xE6, 0xE9, 0xEF);
-    DwmSetWindowAttribute(hwnd, 36, &txt, sizeof(txt));  // DWMWA_TEXT_COLOR
-    COLORREF bd = RGB(0x2E, 0x34, 0x3D);
-    DwmSetWindowAttribute(hwnd, 34, &bd, sizeof(bd));  // DWMWA_BORDER_COLOR
+    if (g_animBmp) DeleteObject(g_animBmp);
+    g_animDC = nullptr;
+    g_animBmp = nullptr;
+    g_animOld = nullptr;
+    g_animW = g_animH = 0;
+    g_animRect = RECT{0, 0, 0, 0};
+    g_animOn = false;
+}
+
+// 内容区几何：与 Paint 里 tabs/content 的算式保持一致
+//
+// 响应式：窗口窄时左侧设备面板按比例收窄，保证右侧内容区至少留出 ~300dp。
+// 800x600 下原本左栏固定 280dp，右侧只剩不到 300dp，「接收/发送/测速」页签会和
+// 右上角「清除已完成」压在一起（实测重叠）。这里按可用宽度动态取左栏宽度。
+int LeftPanelWidth(int w) {
+    const int minRight = th::D(300);
+    int avail = w - th::D(kPad) * 3 - th::D(14);   // 左右 padding + 中缝
+    int maxLeft = avail - minRight;
+    int want = th::D(kLeftW);
+    if (want > maxLeft) want = maxLeft;
+    const int minLeft = th::D(180);
+    if (want < minLeft) want = minLeft;
+    return want;
+}
+int ContentTop() { return th::D(kTopH) + th::D(2) + th::D(42) + th::D(4); }
+int ContentLeft(int w) { return th::D(kPad) + LeftPanelWidth(w) + th::D(14); }
+int ContentWidth(int w) { return w - ContentLeft(w) - th::D(kPad); }
+int ContentHeight(int h) { return (h - th::D(kBottomH) - th::D(8)) - ContentTop(); }
+
+// 从后备缓冲取旧内容快照（必须在上一帧绘制完成后、内容切换之前调用）
+void CaptureContentSnapshot(int w, int h) {
+    FreeAnimSnapshot();
+    if (!g_memDC || w <= 0 || h <= 0) return;
+    const int left = ContentLeft(w), top = ContentTop();
+    const int cw = ContentWidth(w), ch = ContentHeight(h);
+    if (cw <= 0 || ch <= 0) return;
+
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = cw;
+    bi.bmiHeader.biHeight = -ch;  // top-down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HDC dc = CreateCompatibleDC(g_memDC);
+    if (!dc) return;
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bmp) {
+        DeleteDC(dc);
+        return;
+    }
+    HGDIOBJ old = SelectObject(dc, bmp);
+    BitBlt(dc, 0, 0, cw, ch, g_memDC, left, top, SRCCOPY);
+
+    g_animDC = dc;
+    g_animBmp = bmp;
+    g_animOld = old;
+    g_animW = cw;
+    g_animH = ch;
+    g_animRect = RECT{left, top, left + cw, top + ch};
+}
+
+// 把旧快照按当前 alpha/位移叠到后备缓冲。必须在 GDI+ Graphics 析构之后调用。
+void BlendAnimOverlay(HDC target) {
+    if (!g_animOn || !g_animDC || !g_animBmp || !target) return;
+    const uint64_t elapsed = GetTickCount64() - g_animStart;
+    float t = (float)elapsed / (float)kAnimMs;
+    if (t >= 1.0f) t = 1.0f;
+    // 按规格：旧内容的 alpha = EaseOutCubic(1-t)，t=0 时 1（完全盖住）→ t=1 时 0（让出）
+    const float alpha = th::EaseOutCubic(1.0f - t);
+    if (alpha <= 0.01f) return;
+
+    // 24dp 横向位移，随 alpha 一起收敛到 0；窄窗口（逻辑宽 < 480dp）只淡入不位移
+    const int logicW = th::g_dpi ? MulDiv(g_bw, 96, th::g_dpi) : g_bw;
+    const int slide = (logicW < 480) ? 0 : (int)(th::Df(24.0f) * alpha);
+
+    const BYTE a = (BYTE)(alpha * 255.0f + 0.5f);
+    if (a == 0) return;
+    BLENDFUNCTION bf{};
+    bf.BlendOp = AC_SRC_OVER;
+    bf.BlendFlags = 0;
+    bf.SourceConstantAlpha = a;
+    bf.AlphaFormat = 0;  // 不用逐像素 alpha：整幅按 SourceConstantAlpha 淡化
+    GdiAlphaBlend(target, g_animRect.left + slide, g_animRect.top, g_animW, g_animH, g_animDC,
+                  0, 0, g_animW, g_animH, bf);
+}
+
+bool AnimStillRunning() {
+    return g_animOn && (GetTickCount64() - g_animStart) < (uint64_t)kAnimMs;
 }
 
 void Button(Gdiplus::Graphics& g, const Gdiplus::RectF& rc, const std::wstring& label,
             bool primary, bool hover, uint32_t fgOverride = 0, int action = A_None,
             uint32_t btnId = 0, int kind = HK_None) {
     uint32_t bg = primary ? th::cAccent : th::cPanel3;
-    uint32_t fg = primary ? 0xFFFFFFFF : th::cText;
+    uint32_t fg = primary ? th::cOnAccent : th::cText;
     if (!primary && hover) bg = th::cBorder2;
-    if (primary && hover) bg = 0xFF5C9BFB;
+    if (primary && hover) bg = th::Shade(th::cAccent, 1.12f);
     if (fgOverride) fg = fgOverride;
     th::FillRound(g, rc, th::D(7), bg);
     th::DrawText(g, label, th::Font(th::D(13)), rc, fg, 1, false, true);
@@ -188,6 +313,33 @@ void StartSendToSelected(const std::vector<std::wstring>& paths) {
 
 }  // namespace
 
+bool AnimationsEnabled() {
+    if (!g_app.cfg.themeAnimations) return false;
+    BOOL anim = TRUE;
+    if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &anim, 0) && !anim) return false;
+    return true;
+}
+
+void CancelTabAnim() {
+    const bool had = g_animOn || g_animBmp != nullptr;
+    if (g_app.mainWnd) KillTimer(g_app.mainWnd, TIMER_ANIM);
+    FreeAnimSnapshot();
+    if (had) Refresh();
+}
+
+void AnimateTabSwitch(int from, int to) {
+    if (from == to) return;
+    // 再切一次：取消上一个动画；此刻后备缓冲里还是上一帧画面，正好重新取快照
+    CancelTabAnim();
+    if (!AnimationsEnabled() || !g_app.mainWnd) return;
+    if (!g_memDC || g_bw <= 0 || g_bh <= 0) return;  // 还没绘制过，没有可用的旧画面
+    CaptureContentSnapshot(g_bw, g_bh);
+    if (!g_animDC) return;
+    g_animStart = GetTickCount64();
+    g_animOn = true;
+    SetTimer(g_app.mainWnd, TIMER_ANIM, 16, nullptr);
+}
+
 // ---- 对外 ---------------------------------------------------------------
 void ClearHits() { hits.clear(); }
 void AddHit(int kind, uint32_t id, int action, const Gdiplus::RectF& rc) {
@@ -216,38 +368,57 @@ void Refresh() {
 }
 
 void ApplyDpi(UINT dpi) {
-    th::g_dpi = dpi ? (int)dpi : 96;
+    th::g_dpi = th::g_dpiForce > 0 ? th::g_dpiForce : (dpi ? (int)dpi : 96);
+    CancelTabAnim();
     FreeBackbuffer();
     Refresh();
 }
 
 // ---- 顶栏 ---------------------------------------------------------------
+// 响应式：窄窗口优先保留右侧状态徽标，把左边「内网快传 + 本机 IP」压缩；
+// 余量不足时干脆不画 IP 文本，避免与徽标叠字（800x600 实测会重叠）。
 void DrawTopBar(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
-    Gdiplus::RectF title(area.X + th::D(kPad), area.Y, th::D(240), area.Height);
+    const float rightEdge = area.X + area.Width - th::D(kPad);
+
+    // 先量出右侧徽标总宽，才知道左边还剩多少空间
+    const bool showFw = !g_app.firewallOk && !g_app.sawInbound.load();
+    const wchar_t* netLabel = g_app.netIsPublic ? L"公用网络 · 建议切换" : L"专用网络";
+    const float netW = th::TextWidth(netLabel, th::Font(th::D(11.5f))) + th::D(24);
+    float badgesW = netW;
+    if (showFw) {
+        badgesW += th::TextWidth(L"防火墙规则未添加 · 点击修复", th::Font(th::D(11.5f))) + th::D(24) + th::D(8);
+    }
+
+    const float titleW = th::TextWidth(L"内网快传", th::Font(th::D(17), true));
+    const float titleEnd = area.X + th::D(kPad) + titleW;
+
+    // 标题始终画
+    Gdiplus::RectF title(area.X + th::D(kPad), area.Y, titleW + th::D(8), area.Height);
     th::DrawText(g, L"内网快传", th::Font(th::D(17), true), title, th::cText, 0, false, true);
 
-    std::wstring ipText = g_app.localIpText.empty() ? L"未联网" : (L"本机 " + g_app.localIpText);
-    Gdiplus::RectF ip(area.X + th::D(kPad) + th::D(96), area.Y, th::D(260), area.Height);
-    th::DrawText(g, ipText, th::Font(th::D(12)), ip, th::cTextFaint, 0, false, true);
+    // IP 只在左侧还有余量时画（不够就整段省略，宁可少显示也不要叠字）
+    const float ipRoom = rightEdge - badgesW - th::D(12) - (titleEnd + th::D(16));
+    if (ipRoom >= th::D(110)) {
+        std::wstring ipText = g_app.localIpText.empty() ? L"未联网" : (L"本机 " + g_app.localIpText);
+        Gdiplus::RectF ip(titleEnd + th::D(16), area.Y, ipRoom, area.Height);
+        th::DrawText(g, ipText, th::Font(th::D(12)), ip, th::cTextFaint, 0, true, true);
+    }
 
-    float right = area.X + area.Width - th::D(kPad);
+    float right = rightEdge;
 
-    if (!g_app.firewallOk && !g_app.sawInbound.load()) {
+    if (showFw) {
         std::wstring t = L"防火墙规则未添加 · 点击修复";
         float w = th::TextWidth(t, th::Font(th::D(11.5f))) + th::D(24);
         Gdiplus::RectF r(right - w, area.Y + (area.Height - th::D(24)) / 2, w, th::D(24));
-        Badge(g, r, t, 0xFFFFD9D7, 0x33E5645F);
+        Badge(g, r, t, th::TintText(th::cRed), th::TintBg(th::cRed));
         AddHit(HK_FixFirewall, 0, A_None, r);
         right -= w + th::D(8);
     }
 
     {
-        const wchar_t* label = g_app.netIsPublic ? L"公用网络 · 建议切换" : L"专用网络";
-        uint32_t fg = g_app.netIsPublic ? 0xFFFFE0B2 : 0xFFB9F2D2;
-        uint32_t bg = g_app.netIsPublic ? 0x33E2B34D : 0x3357C98A;
-        float w = th::TextWidth(label, th::Font(th::D(11.5f))) + th::D(24);
-        Gdiplus::RectF r(right - w, area.Y + (area.Height - th::D(24)) / 2, w, th::D(24));
-        Badge(g, r, label, fg, bg);
+        const uint32_t base = g_app.netIsPublic ? th::cAmber : th::cGreen;
+        Gdiplus::RectF r(right - netW, area.Y + (area.Height - th::D(24)) / 2, netW, th::D(24));
+        Badge(g, r, netLabel, th::TintText(base), th::TintBg(base));
         AddHit(HK_Network, 0, A_None, r);
     }
 }
@@ -350,16 +521,18 @@ void DrawTabs(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
         x += w;
     }
 
-    // 右侧小工具
+    // 右侧小工具：只在与页签不重叠时画（窄窗口下右栏只有 ~300dp，硬画会压住「测速」）
     if (curTab == TabRecv) {
         const wchar_t* label = L"清除已完成";
         float w = th::TextWidth(label, th::Font(th::D(11.5f))) + th::D(20);
-        Gdiplus::RectF r(area.X + area.Width - w, area.Y + (area.Height - th::D(24)) / 2, w,
-                         th::D(24));
-        bool hv = HoverIs(HK_BottomBtn, 0, A_ClearFinished);
-        if (hv) th::FillRound(g, r, th::D(6), th::cHover);
-        th::DrawText(g, label, th::Font(th::D(11.5f)), r, th::cTextFaint, 1, false, true);
-        AddHit(HK_BottomBtn, 0, A_ClearFinished, r);
+        if (x + th::D(8) < area.X + area.Width - w) {   // 至少有 8dp 间隙才画
+            Gdiplus::RectF r(area.X + area.Width - w, area.Y + (area.Height - th::D(24)) / 2, w,
+                             th::D(24));
+            bool hv = HoverIs(HK_BottomBtn, 0, A_ClearFinished);
+            if (hv) th::FillRound(g, r, th::D(6), th::cHover);
+            th::DrawText(g, label, th::Font(th::D(11.5f)), r, th::cTextFaint, 1, false, true);
+            AddHit(HK_BottomBtn, 0, A_ClearFinished, r);
+        }
     }
 }
 
@@ -398,9 +571,14 @@ void DrawBottomBar(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
         if (StateIsActive(j.state)) { total += j.bps; ++active; }
     }
     wchar_t buf[128];
-    if (active > 0) swprintf(buf, 128, L"%s · %d 个任务进行中", util::FormatSpeed(total).c_str(), active);
-    else if (!statusLine.empty()) swprintf(buf, 128, L"%s", statusLine.c_str());
-    else swprintf(buf, 128, L"就绪");
+    // %ls：MinGW 的 swprintf 里 %s 是窄字符，宽字符串只能用 %ls
+    if (active > 0) {
+        swprintf(buf, 128, L"%ls · %d 个任务进行中", util::FormatSpeed(total).c_str(), active);
+    } else if (!statusLine.empty()) {
+        swprintf(buf, 128, L"%ls", statusLine.c_str());
+    } else {
+        swprintf(buf, 128, L"就绪");
+    }
 
     Gdiplus::RectF info(area.X + area.Width - th::D(300) - th::D(kPad), area.Y, th::D(300),
                         area.Height);
@@ -430,6 +608,30 @@ void Paint(HWND hwnd) {
         g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
         g.Clear(th::C(th::cBg));
 
+        // 壁纸层：铺满整个客户区，再叠一层按 g_scrim 调强度的主题底色暗化层
+        if (th::HasWallpaper()) {
+            HBITMAP wp = th::WallpaperBitmap(w, h);
+            if (wp) {
+                Gdiplus::Bitmap wpb(wp, nullptr);
+                if (wpb.GetLastStatus() == Gdiplus::Ok) {
+                    g.DrawImage(&wpb, 0, 0, w, h);
+                }
+                const int scrim = th::ScrimAlpha();
+                if (scrim > 0) {
+                    th::FillRect(g, Gdiplus::RectF(0, 0, (float)w, (float)h),
+                                 th::WithAlpha(th::cBg, scrim));
+                }
+            } else {
+                // 只报一次，避免每帧刷日志
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    logx::Line("theme: wallpaper decode failed: %s",
+                               util::Narrow(th::CurrentSpec().wallpaperPath).c_str());
+                }
+            }
+        }
+
         hits.clear();
 
         Gdiplus::RectF top((float)0, 0, (float)w, (float)th::D(kTopH));
@@ -439,7 +641,8 @@ void Paint(HWND hwnd) {
 
         const float bodyY = top.Height + th::D(2);
         const float bodyH = bottom.Y - bodyY - th::D(8);
-        Gdiplus::RectF left(th::D(kPad), bodyY, th::D(kLeftW), bodyH);
+        const float leftW = (float)LeftPanelWidth(w);
+        Gdiplus::RectF left(th::D(kPad), bodyY, leftW, bodyH);
         Gdiplus::RectF right(left.X + left.Width + th::D(14), bodyY,
                              (float)w - (left.X + left.Width + th::D(14)) - th::D(kPad), bodyH);
 
@@ -461,6 +664,9 @@ void Paint(HWND hwnd) {
         DrawBottomBar(g, bottomBar);
     }
 
+    // 切换动画的旧内容叠层：GDI+ 画笔/画刷已随 Graphics 析构释放，这里改用纯 GDI 合成
+    BlendAnimOverlay(g_memDC);
+
     BitBlt(hdc, 0, 0, w, h, g_memDC, 0, 0, SRCCOPY);
     EndPaint(hwnd, &ps);
 }
@@ -468,10 +674,13 @@ void Paint(HWND hwnd) {
 // ---- 交互 -------------------------------------------------------------
 void OnClick(const Hit& h) {
     switch (h.kind) {
-        case HK_Tab:
+        case HK_Tab: {
+            const int from = curTab;
             curTab = (int)h.id;
+            AnimateTabSwitch(from, curTab);
             Refresh();
             return;
+        }
         case HK_Device: {
             for (const auto& d : devs) {
                 if (d.ip == h.id) { selDevId = util::Widen(d.id); break; }
@@ -710,13 +919,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
             g_app.mainWnd = hwnd;
-            DarkTitle(hwnd);
+            ApplyTitleBar(hwnd);
             DragAcceptFiles(hwnd, TRUE);
             SetTimer(hwnd, TIMER_UI, 200, nullptr);
             RefreshData();
             return 0;
         }
         case WM_SIZE:
+            CancelTabAnim();  // 尺寸变了快照就失效，直接取消动画
             FreeBackbuffer();
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -756,6 +966,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const bool active = jobs::AnyActive() || speed::IsRunning();
                 SetTimer(hwnd, TIMER_UI, active ? 120 : 300, nullptr);
                 if (active || curTab == TabSpeed) InvalidateRect(hwnd, nullptr, FALSE);
+            } else if (wp == TIMER_ANIM) {
+                if (!AnimStillRunning()) {
+                    KillTimer(hwnd, TIMER_ANIM);
+                    FreeAnimSnapshot();
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
         case WM_DROPFILES: {
@@ -792,7 +1008,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_SETTINGCHANGE:
-            DarkTitle(hwnd);
+            ApplyTitleBar(hwnd);
             return 0;
         case WM_COPYDATA: {
             auto* cds = (COPYDATASTRUCT*)lp;
@@ -871,6 +1087,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             KillTimer(hwnd, TIMER_UI);
+            KillTimer(hwnd, TIMER_ANIM);
+            FreeAnimSnapshot();
             FreeBackbuffer();
             g_app.mainWnd = nullptr;
             PostQuitMessage(0);
@@ -925,9 +1143,15 @@ bool Create(HINSTANCE inst) {
         if (fn) dpi = fn(hwnd);
     }
     if (dpi == 0) dpi = 96;
+    // --dpi N（仅测试用）强制覆盖缩放；否则跟随窗口真实 DPI
+    if (th::g_dpiForce > 0) dpi = (UINT)th::g_dpiForce;
     th::g_dpi = (int)dpi;
     if (dpi != 96) {
-        RECT r2{0, 0, MulDiv(1120, (int)dpi, 96), MulDiv(720, (int)dpi, 96)};
+        // 高 DPI 下按缩放后尺寸重排，但不超出屏幕可用区域
+        int cw = MulDiv(1120, (int)dpi, 96), chh = MulDiv(720, (int)dpi, 96);
+        if (cw > (int)(sw * 0.94)) cw = (int)(sw * 0.94);
+        if (chh > (int)(sh * 0.90)) chh = (int)(sh * 0.90);
+        RECT r2{0, 0, cw, chh};
         AdjustWindowRectEx(&r2, WS_OVERLAPPEDWINDOW, FALSE, 0);
         int w2 = r2.right - r2.left, h2 = r2.bottom - r2.top;
         int x2 = (sw - w2) / 2, y2 = (sh - h2) / 2;
@@ -935,6 +1159,7 @@ bool Create(HINSTANCE inst) {
         if (y2 < 0) y2 = 0;
         SetWindowPos(hwnd, nullptr, x2, y2, w2, h2, SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    ApplyTitleBar(hwnd);  // 主题在窗口创建后才生效（WM_CREATE 里也调过一次）
     logx::Line("ui: dpi=%u screen=%dx%d", dpi, sw, sh);
 
     ShowWindow(hwnd, SW_SHOW);

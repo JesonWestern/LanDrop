@@ -77,6 +77,12 @@ void ApplyDpi(UINT dpi);
 void Refresh();
 void SetStatus(const std::wstring& s);
 
+// 主题相关：非客户区配色与页签切换动画
+void ApplyTitleBar(HWND hwnd);
+bool AnimationsEnabled();
+void AnimateTabSwitch(int from, int to);
+void CancelTabAnim();
+
 void ClearHits();
 void AddHit(int kind, uint32_t id, int action, const Gdiplus::RectF& rc);
 const Hit* FindHit(int x, int y);

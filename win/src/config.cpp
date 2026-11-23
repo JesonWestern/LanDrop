@@ -1,4 +1,5 @@
 #include "app.h"
+#include "theme.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -38,6 +39,26 @@ void WriteStr(const wchar_t* key, const std::wstring& val) {
 void WriteInt(const wchar_t* key, int v) {
     wchar_t buf[32];
     swprintf(buf, 32, L"%d", v);
+    WritePrivateProfileStringW(kSec, key, buf, IniPath().c_str());
+}
+
+// 主题强调色按 "AARRGGBB" 十六进制存，缺省/非法一律回落 0（= 用预设自带强调色）
+uint32_t ReadArgb(const wchar_t* key, uint32_t def) {
+    wchar_t buf[64];
+    buf[0] = 0;
+    GetPrivateProfileStringW(kSec, key, L"", buf, 64, IniPath().c_str());
+    if (buf[0] == 0) return def;
+    wchar_t* end = nullptr;
+    const unsigned long long v = wcstoull(buf, &end, 16);
+    if (end == buf || v > 0xFFFFFFFFull) return def;
+    // 未写 alpha 位时补成不透明
+    const uint32_t argb = (uint32_t)v;
+    return argb == 0 ? 0u : ((argb & 0x00FFFFFFu) | 0xFF000000u);
+}
+
+void WriteArgb(const wchar_t* key, uint32_t v) {
+    wchar_t buf[32];
+    swprintf(buf, 32, L"%08X", (unsigned int)v);
     WritePrivateProfileStringW(kSec, key, buf, IniPath().c_str());
 }
 
@@ -87,7 +108,7 @@ bool Load() {
     ResetDefaults();
     AppConfig& c = g_app.cfg;
 
-    c.cfgver = ReadInt(L"cfgver", 1, 0, 1000);
+    c.cfgver = ReadInt(L"cfgver", 2, 0, 1000);
 
     std::wstring id = ReadStr(L"deviceId", L"");
     if (id.size() < 8) id = c.deviceId;  // 损坏则重建
@@ -112,6 +133,14 @@ bool Load() {
     c.listenPort = ReadInt(L"listenPort", proto::kTransferPort, 1024, 65535);
     c.discoverPort = ReadInt(L"discoverPort", proto::kDiscoverPort, 1024, 65535);
     c.trustedIds = SplitSemi(ReadStr(L"trustedIds", L""));
+
+    // ---- 外观（cfgver 2 新增；旧配置缺键时全部回落默认）--------------------
+    c.theme = th::NormalizeThemeId(ReadStr(L"theme", L"graphite"));
+    c.themeAccent = ReadArgb(L"themeAccent", 0);
+    c.themeWallpaper = ReadStr(L"themeWallpaper", L"");
+    c.themeScrim = th::ClampScrim(ReadInt(L"themeScrim", 55, 0, 80));
+    c.themeAnimations = ReadBool(L"themeAnimations", true);
+    c.cfgver = 2;
 
     EnsureDirs();
     // 首次运行就落盘，避免进程被强杀后配置全丢
@@ -138,6 +167,11 @@ bool Save() {
     WriteInt(L"listenPort", c.listenPort);
     WriteInt(L"discoverPort", c.discoverPort);
     WriteStr(L"trustedIds", JoinSemi(c.trustedIds));
+    WriteStr(L"theme", th::NormalizeThemeId(c.theme));
+    WriteArgb(L"themeAccent", c.themeAccent);
+    WriteStr(L"themeWallpaper", c.themeWallpaper);
+    WriteInt(L"themeScrim", th::ClampScrim(c.themeScrim));
+    WriteInt(L"themeAnimations", c.themeAnimations ? 1 : 0);
     return true;
 }
 

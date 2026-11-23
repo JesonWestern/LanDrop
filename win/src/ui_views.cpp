@@ -56,9 +56,9 @@ float RowButton(Gdiplus::Graphics& g, float right, float cy, const std::wstring&
     const float h = th::D(24);
     const float w = th::TextWidth(label, th::Font(th::D(12))) + th::D(20);
     Gdiplus::RectF r(right - w, cy - h / 2, w, h);
-    uint32_t bg = danger ? 0x33E5645F : th::cPanel3;
-    uint32_t fg = danger ? 0xFFFFB4B0 : th::cText;
-    if (hover) bg = danger ? 0x55E5645F : th::cBorder2;
+    uint32_t bg = danger ? th::TintBg(th::cRed) : th::cPanel3;
+    uint32_t fg = danger ? th::TintText(th::cRed) : th::cText;
+    if (hover) bg = danger ? th::WithAlpha(th::cRed, th::g_pal.light ? 0x33 : 0x55) : th::cBorder2;
     th::FillRound(g, r, th::D(6), bg);
     th::DrawText(g, label, th::Font(th::D(12)), r, fg, 1, false, true);
     AddHit(kind, jobId, action, ClipRect(r, clip));
@@ -267,8 +267,8 @@ void DrawSpeedPanel(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
         Gdiplus::RectF r(x, by, w, th::D(30));
         th::FillRound(g, r, th::D(7), act ? th::cAccentDk : (hv ? th::cHover : th::cPanel2));
         if (act) th::StrokeRound(g, r, th::D(7), th::cAccent, 1.0f);
-        th::DrawText(g, dirs[i].label, th::Font(th::D(12)), r, act ? 0xFFFFFFFF : th::cTextDim, 1,
-                     false, true);
+        th::DrawText(g, dirs[i].label, th::Font(th::D(12)), r,
+                     act ? th::OnAccentFor(th::cAccentDk) : th::cTextDim, 1, false, true);
         AddHit(HK_SpeedDir, (uint32_t)dirs[i].mode, dirs[i].action, r);
         x += w + th::D(8);
     }
@@ -332,9 +332,11 @@ void DrawSpeedPanel(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
         Gdiplus::RectF r(card.X + card.Width / 2 - w / 2, card.Y + card.Height - th::D(46), w,
                          th::D(34));
         const bool hv = HoverIs(HK_SpeedRun, 0, A_None);
-        th::FillRound(g, r, th::D(8), running ? 0x33E5645F : (hv ? 0xFF5C9BFB : th::cAccent));
+        th::FillRound(g, r, th::D(8),
+                      running ? th::TintBg(th::cRed)
+                               : (hv ? th::Shade(th::cAccent, 1.12f) : th::cAccent));
         th::DrawText(g, running ? L"停止" : L"开始测速", th::Font(th::D(13.5f), true), r,
-                     running ? 0xFFFFB4B0 : 0xFFFFFFFF, 1, false, true);
+                     running ? th::TintText(th::cRed) : th::cOnAccent, 1, false, true);
         AddHit(HK_SpeedRun, 0, A_None, r);
     }
 
