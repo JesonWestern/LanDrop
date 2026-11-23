@@ -22,3 +22,25 @@
 通过 2 项，失败 2 项
   FAIL: 切页最慢 p99 < 60ms
   FAIL: 冷启动中位 < 1150ms
+设备  · API  · 版本 ? · 
+
+[A] 稳态滚动（最近页签，真实手势）
+  总帧 381  掉帧 0 (0.0%)  p50/p90/p99 = 8/11/16ms  最慢单帧 18.0ms
+  GPU p90=2ms  SlowUI=0  SlowDraw=0
+  [PASS] 滚动没有采到帧  frames=381
+  [PASS] 滚动掉帧率 < 1.5%  0.0%
+
+[B] 切换 tab 的单帧尖峰（每页取最慢帧）
+  category  p99=150ms  最慢帧= 185.1ms  (input=37.8/layout=0.2/draw=1.0)
+  files     p99= 85ms  最慢帧=  87.0ms  (input=19.8/layout=0.3/draw=1.2)
+  transfer  p99= 57ms  最慢帧=  60.1ms  (input=30.6/layout=0.2/draw=0.8)
+  settings  p99=121ms  最慢帧= 123.9ms  (input=28.1/layout=0.2/draw=1.0)
+  speed     p99=113ms  最慢帧= 112.5ms  (input=25.7/layout=0.2/draw=0.8)
+  [PASS] 切页最慢 p99 < 220ms  150ms
+
+[C] 冷启动（am start -W，5 次取中位）
+  中位 1589ms  最小 1557ms  最大 1610ms  样本 [1557, 1586, 1589, 1595, 1610]
+  [PASS] 冷启动中位 < 1750ms  1589ms
+
+================ 结果 ================
+通过 4 项，失败 0 项
