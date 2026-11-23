@@ -521,16 +521,43 @@ void OnClick(const Hit& h) {
             auto j = jobs::Find(h.id);
             if (!j) return;
             switch (h.action) {
-                case A_Open:
-                    if (!j->savePath.empty()) {
-                        ShellExecuteW(nullptr, L"open", j->savePath.c_str(), nullptr, nullptr,
-                                      SW_SHOWNORMAL);
-                    }
-                    break;
-                case A_OpenFolder: {
+                case A_Open: {
+                    // 收到的是单文件时打开文件，收到的是目录/多文件时打开目录
                     std::wstring p = j->savePath;
                     if (p.empty()) p = j->saveDir;
-                    if (!p.empty()) {
+                    if (p.empty()) {
+                        MessageBoxW(g_app.mainWnd, L"没有找到这个任务的保存位置。", L"内网快传",
+                                    MB_ICONINFORMATION);
+                        break;
+                    }
+                    if (!util::PathExists(p)) {
+                        MessageBoxW(g_app.mainWnd,
+                                    (L"文件已不在原位置：\n" + p +
+                                     L"\n\n可能已被移动、重命名或删除。可以用「所在文件夹」查看保存目录。")
+                                        .c_str(),
+                                    L"内网快传", MB_ICONWARNING);
+                        break;
+                    }
+                    HINSTANCE r = ShellExecuteW(nullptr, L"open", p.c_str(), nullptr, nullptr,
+                                                SW_SHOWNORMAL);
+                    if ((INT_PTR)r <= 32) {
+                        MessageBoxW(g_app.mainWnd,
+                                    L"打开失败：没有可用的默认程序来打开这个文件。", L"内网快传",
+                                    MB_ICONWARNING);
+                    }
+                    break;
+                }
+                case A_OpenFolder: {
+                    std::wstring p = j->savePath;
+                    if (p.empty() || !util::PathExists(p)) p = j->saveDir;
+                    if (p.empty()) {
+                        MessageBoxW(g_app.mainWnd, L"没有找到这个任务的保存位置。", L"内网快传",
+                                    MB_ICONINFORMATION);
+                        break;
+                    }
+                    if (util::IsDirPath(p)) {
+                        ShellExecuteW(nullptr, L"open", p.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    } else {
                         std::wstring args = L"/select,\"" + p + L"\"";
                         ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr,
                                       SW_SHOWNORMAL);
@@ -542,6 +569,7 @@ void OnClick(const Hit& h) {
                     if (PickFolder(g_app.mainWnd, &dir)) {
                         std::wstring outPath;
                         std::wstring src = j->savePath;
+                        if (src.empty()) src = j->saveDir;
                         if (!src.empty() && storage::MoveToSaveDir(src, dir, &outPath)) {
                             j->savePath = outPath;
                             j->saveDir = util::ParentOf(outPath);
@@ -821,7 +849,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 case IDM_ABOUT:
                     MessageBoxW(hwnd,
-                                L"内网快传 LanDrop 1.0.0\n\n"
+                                L"内网快传 LanDrop " LANDROP_VERSION_W L"\n\n"
                                 L"Windows ⇄ Android 局域网文件互传与网速测试。\n"
                                 L"零配置发现 · 断点续传 · 不经过任何服务器。\n\n"
                                 L"协议 v1 · 端口 UDP 47820 / TCP 47821",

@@ -10,8 +10,8 @@
 #include <vector>
 
 // ---- 版本 -----------------------------------------------------------------
-#define LANDROP_VERSION_W   L"1.0.0"
-#define LANDROP_VERSION_A   "1.0.0"
+#define LANDROP_VERSION_W   L"1.1.0"
+#define LANDROP_VERSION_A   "1.1.0"
 #define LANDROP_APP_NAME    L"内网快传 LanDrop"
 #define LANDROP_WND_CLASS   L"LanDropMainWnd"
 #define LANDROP_MUTEX_NAME  L"LanDropSingleInstance_v1"

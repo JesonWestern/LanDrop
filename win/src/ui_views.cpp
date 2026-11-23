@@ -41,9 +41,18 @@ void EmptyState(Gdiplus::Graphics& g, const Gdiplus::RectF& area, const std::wst
     }
 }
 
+Gdiplus::RectF ClipRect(const Gdiplus::RectF& a, const Gdiplus::RectF& b) {
+    const float x1 = (std::max)(a.X, b.X);
+    const float y1 = (std::max)(a.Y, b.Y);
+    const float x2 = (std::min)(a.X + a.Width, b.X + b.Width);
+    const float y2 = (std::min)(a.Y + a.Height, b.Y + b.Height);
+    return Gdiplus::RectF(x1, y1, (std::max)(0.0f, x2 - x1), (std::max)(0.0f, y2 - y1));
+}
+
 // 画一个行内小按钮，返回宽度
 float RowButton(Gdiplus::Graphics& g, float right, float cy, const std::wstring& label, bool hover,
-                bool danger, int action, uint32_t jobId, int kind) {
+                bool danger, int action, uint32_t jobId, int kind,
+                const Gdiplus::RectF& clip = Gdiplus::RectF(0, 0, 1e6f, 1e6f)) {
     const float h = th::D(24);
     const float w = th::TextWidth(label, th::Font(th::D(12))) + th::D(20);
     Gdiplus::RectF r(right - w, cy - h / 2, w, h);
@@ -52,11 +61,16 @@ float RowButton(Gdiplus::Graphics& g, float right, float cy, const std::wstring&
     if (hover) bg = danger ? 0x55E5645F : th::cBorder2;
     th::FillRound(g, r, th::D(6), bg);
     th::DrawText(g, label, th::Font(th::D(12)), r, fg, 1, false, true);
-    AddHit(kind, jobId, action, r);
+    AddHit(kind, jobId, action, ClipRect(r, clip));
     return w + th::D(6);
 }
 
-void DownloadRow(Gdiplus::Graphics& g, const Gdiplus::RectF& row, const JobView& v) {
+void DownloadRow(Gdiplus::Graphics& g, const Gdiplus::RectF& row, const JobView& v,
+                 const Gdiplus::RectF& area) {
+    // 行命中必须先注册：FindHit 是后注册优先，行整体会盖住行内按钮。
+    // 同时把行命中裁剪到列表可视区域内，避免滚动后压住页签/顶栏。
+    AddHit(HK_RecvRow, v.id, A_None, ClipRect(row, area));
+
     const bool hv = HoverIs(HK_RecvRow, v.id, A_None);
     th::FillRound(g, row, th::D(10), hv ? th::cPanel2 : th::cPanel);
 
@@ -70,18 +84,18 @@ void DownloadRow(Gdiplus::Graphics& g, const Gdiplus::RectF& row, const JobView&
     // 右侧按钮
     if (v.state == JobState::Done) {
         btnRight -= RowButton(g, btnRight, cy, L"另存为", HoverIs(HK_RecvBtn, v.id, A_SaveAs),
-                              false, A_SaveAs, v.id, HK_RecvBtn);
+                              false, A_SaveAs, v.id, HK_RecvBtn, area);
         btnRight -= RowButton(g, btnRight, cy, L"所在文件夹",
                               HoverIs(HK_RecvBtn, v.id, A_OpenFolder), false, A_OpenFolder, v.id,
-                              HK_RecvBtn);
+                              HK_RecvBtn, area);
         btnRight -= RowButton(g, btnRight, cy, L"打开", HoverIs(HK_RecvBtn, v.id, A_Open), false,
-                              A_Open, v.id, HK_RecvBtn);
+                              A_Open, v.id, HK_RecvBtn, area);
     } else if (StateIsActive(v.state)) {
         btnRight -= RowButton(g, btnRight, cy, L"取消", HoverIs(HK_RecvBtn, v.id, A_Cancel), true,
-                              A_Cancel, v.id, HK_RecvBtn);
+                              A_Cancel, v.id, HK_RecvBtn, area);
     } else {
         btnRight -= RowButton(g, btnRight, cy, L"移除", HoverIs(HK_RecvBtn, v.id, A_Remove), false,
-                              A_Remove, v.id, HK_RecvBtn);
+                              A_Remove, v.id, HK_RecvBtn, area);
     }
 
     const float textX = ic.X + ic.Width + th::D(10);
@@ -98,8 +112,6 @@ void DownloadRow(Gdiplus::Graphics& g, const Gdiplus::RectF& row, const JobView&
                            row.Width - th::D(28), th::D(4));
         th::ProgressBar(g, bar, v.Progress(), th::cAccent, th::cPanel3);
     }
-
-    AddHit(HK_RecvRow, v.id, A_None, row);
 }
 
 }  // namespace
@@ -128,7 +140,7 @@ void DrawRecvList(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
     float y = area.Y - (float)scrollRecv;
     for (const auto* v : rows) {
         if (y + rowH >= area.Y && y <= area.Y + area.Height) {
-            DownloadRow(g, Gdiplus::RectF(area.X, y, area.Width, rowH), *v);
+            DownloadRow(g, Gdiplus::RectF(area.X, y, area.Width, rowH), *v, area);
         }
         y += rowH + gap;
     }
@@ -205,6 +217,7 @@ void DrawSendList(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
     for (const auto* v : rows) {
         Gdiplus::RectF row(list.X, y, list.Width, rowH);
         if (y + rowH >= list.Y && y <= list.Y + list.Height) {
+            AddHit(HK_SendRow, v->id, A_None, ClipRect(row, list));  // 先注册行，后注册按钮
             const bool hv = HoverIs(HK_SendRow, v->id, A_None);
             th::FillRound(g, row, th::D(10), hv ? th::cPanel2 : th::cPanel);
             Gdiplus::RectF ic(row.X + th::D(14), row.Y + th::D(14), th::D(18), th::D(18));
@@ -214,7 +227,7 @@ void DrawSendList(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
             if (StateIsActive(v->state)) {
                 btnRight -= RowButton(g, btnRight, row.Y + th::D(22), L"取消",
                                       HoverIs(HK_SendBtn, v->id, A_Cancel), true, A_Cancel, v->id,
-                                      HK_SendBtn);
+                                      HK_SendBtn, list);
             }
             Gdiplus::RectF title(ic.X + ic.Width + th::D(10), row.Y + th::D(9),
                                  btnRight - ic.X - ic.Width - th::D(24), th::D(20));
@@ -226,7 +239,6 @@ void DrawSendList(Gdiplus::Graphics& g, const Gdiplus::RectF& area) {
                                                   row.Width - th::D(28), th::D(3)),
                                 v->Progress(), th::cGreen, th::cPanel3);
             }
-            AddHit(HK_SendRow, v->id, A_None, row);
         }
         y += rowH + gap;
     }

@@ -28,7 +28,7 @@
 报文是单行 JSON，**必须小于 512 字节**：
 
 ```json
-{"t":"probe","v":1,"id":"a405b3dc-fd97-4868-bb81-3cd132fbe967","name":"我的手机","plat":"android","port":47821,"ver":"1.0.0","caps":["file","folder","resume","speed"]}
+{"t":"probe","v":1,"id":"a405b3dc-fd97-4868-bb81-3cd132fbe967","name":"我的手机","plat":"android","port":47821,"ver":"1.1.0","caps":["file","folder","resume","speed"]}
 ```
 
 | 字段 | 类型 | 说明 |
@@ -62,7 +62,7 @@ TCP 47821 上的**每一条**连接都以一行 JSON `hello` 开头，之后按 
 ### 3.1 控制连接
 
 ```json
-{"t":"hello","kind":"ctrl","v":1,"id":"...","name":"...","plat":"android","ver":"1.0.0","caps":["file","folder","resume","speed"]}
+{"t":"hello","kind":"ctrl","v":1,"id":"...","name":"...","plat":"android","ver":"1.1.0","caps":["file","folder","resume","speed"]}
 ```
 
 服务端回：

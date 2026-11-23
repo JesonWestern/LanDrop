@@ -3,7 +3,7 @@
 
 #define MyAppName "内网快传"
 #define MyAppNameEn "LanDrop"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "LanDrop"
 #define MyAppExeName "LanDrop.exe"
 #define MyAppId "{{B1E4C7D2-9A3F-4E58-8C21-7D6F0A5B3E94}"

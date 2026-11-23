@@ -255,7 +255,7 @@ object Speed {
         o.put("id", settings.deviceId)
         o.put("name", settings.deviceName)
         o.put("plat", "android")
-        o.put("ver", "1.0.0")
+        o.put("ver", com.landrop.transfer.BuildConfig.VERSION_NAME)
         o.put("caps", JSONArray().put("speed"))
         if (kind == "data") {
             o.put("job", "speed:$token")
