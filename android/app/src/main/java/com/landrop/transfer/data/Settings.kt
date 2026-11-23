@@ -47,6 +47,22 @@ class Settings(context: Context) {
         get() = sp.getBoolean("selectionHintSeen", false)
         set(v) = sp.edit().putBoolean("selectionHintSeen", v).apply()
 
+    /**
+     * 文件页视图：`"list"` / `"compact"` / `"grid"`（默认列表）。
+     * 存稳定小写 id；读取端必须用 `viewModeOf(id)` 回落，脏值不崩。
+     */
+    var fileViewMode: String
+        get() = sp.getString("fileViewMode", "list") ?: "list"
+        set(v) = sp.edit().putString("fileViewMode", v).apply()
+
+    /**
+     * 文件页页签：`"recent"` / `"storage"`（默认最近）。
+     * 上次停在哪一页就回到哪一页，切换回来不用重逢重新点。
+     */
+    var fileTab: String
+        get() = sp.getString("fileTab", "recent") ?: "recent"
+        set(v) = sp.edit().putString("fileTab", v).apply()
+
     private fun trustedSet(): MutableSet<String> =
         (sp.getStringSet("trusted", emptySet()) ?: emptySet()).toMutableSet()
 
