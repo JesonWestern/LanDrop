@@ -3,6 +3,16 @@ package com.landrop.transfer.ui
 import android.app.Activity
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -33,10 +43,11 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -55,6 +66,9 @@ object Tab {
     const val SETTINGS = 4
 }
 
+/** tab 切换动画时长（毫秒）。关掉动画时归零，视觉上等于瞬时切换。 */
+private const val TAB_ANIM_MS = 180
+
 private data class TabItem(val label: String, val hint: String)
 
 @Composable
@@ -66,6 +80,9 @@ fun LanDropApp() {
     // 切换 tab 时保留各页的 rememberSaveable 状态（目录位置、选中、展开、排序）
     val tabStates = rememberSaveableStateHolder()
     val ctx = LocalContext.current
+    // 「用户设置 + 系统动画开关」已在外壳统一合并，这里只读结果
+    val animations = LocalLdAnimations.current
+    val tabAnimMs = if (animations) TAB_ANIM_MS else 0
 
     val activeJobs = jobs.count { it.state.active }
 
@@ -135,28 +152,51 @@ fun LanDropApp() {
     // 这样分类详情/子目录等内层页面的返回才会先于 tab 级返回生效。
     BackHandler(enabled = tab != Tab.FILES) { tab = Tab.FILES }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(LdColors.Bg)
-            .statusBarsPadding()
-    ) {
-        Box(Modifier.weight(1f)) {
-            tabStates.SaveableStateProvider(tab) {
-                when (tab) {
-                    Tab.FILES -> FileScreen(devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
-                    Tab.CATEGORY -> CategoryScreen(devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
-                    Tab.TRANSFER -> TransferScreen(jobs = jobs, onOpenFiles = { tab = Tab.FILES })
-                    Tab.SPEED -> SpeedScreen(speed = speed, devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
-                    else -> SettingsScreen(devices = devices)
+    // 根节点铺主题壁纸 + scrim（替代原来的纯色 .background(LdColors.Bg)）
+    ThemedBackground {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+        ) {
+            Box(Modifier.weight(1f)) {
+                AnimatedContent(
+                    targetState = tab,
+                    transitionSpec = {
+                        // 新 tab 序号更大 → 从右滑入；否则从左滑入
+                        val dir = if (targetState > initialState) {
+                            AnimatedContentTransitionScope.SlideDirection.Left
+                        } else {
+                            AnimatedContentTransitionScope.SlideDirection.Right
+                        }
+                        val spec = tween<IntOffset>(
+                            tabAnimMs, easing = FastOutSlowInEasing
+                        )
+                        val fadeMs = tween<Float>(tabAnimMs, easing = FastOutSlowInEasing)
+                        (slideIntoContainer(dir, animationSpec = spec) + fadeIn(fadeMs))
+                            .togetherWith(fadeOut(fadeMs))
+                            .using(SizeTransform(clip = false))
+                    },
+                    label = "tabContent",
+                ) { t ->
+                    // rememberSaveableStateHolder 用 key=t，切回旧页面时状态仍在
+                    tabStates.SaveableStateProvider(t) {
+                        when (t) {
+                            Tab.FILES -> FileScreen(devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
+                            Tab.CATEGORY -> CategoryScreen(devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
+                            Tab.TRANSFER -> TransferScreen(jobs = jobs, onOpenFiles = { tab = Tab.FILES })
+                            Tab.SPEED -> SpeedScreen(speed = speed, devices = devices, onNeedDevice = { tab = Tab.SETTINGS })
+                            else -> SettingsScreen(devices = devices)
+                        }
+                    }
                 }
             }
+            BottomBar(
+                tab = tab,
+                activeJobs = activeJobs,
+                onSelect = { tab = it },
+            )
         }
-        BottomBar(
-            tab = tab,
-            activeJobs = activeJobs,
-            onSelect = { tab = it },
-        )
     }
 
     // 首次进入启动前台服务
@@ -175,6 +215,9 @@ private fun BottomBar(tab: Int, activeJobs: Int, onSelect: (Int) -> Unit) {
         TabItem("测速", ""),
         TabItem("设置", ""),
     )
+    val dur = if (LocalLdAnimations.current) TAB_ANIM_MS else 0
+    val widthSpec = remember(dur) { tween<Dp>(dur, easing = FastOutSlowInEasing) }
+    val alphaSpec = remember(dur) { tween<Float>(dur, easing = FastOutSlowInEasing) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -186,6 +229,16 @@ private fun BottomBar(tab: Int, activeJobs: Int, onSelect: (Int) -> Unit) {
     ) {
         items.forEachIndexed { i, item ->
             val sel = tab == i
+            val indicatorWidth by animateDpAsState(
+                targetValue = if (sel) 18.dp else 0.dp,
+                animationSpec = widthSpec,
+                label = "tabIndicatorWidth",
+            )
+            val indicatorAlpha by animateFloatAsState(
+                targetValue = if (sel) 1f else 0f,
+                animationSpec = alphaSpec,
+                label = "tabIndicatorAlpha",
+            )
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
@@ -208,16 +261,16 @@ private fun BottomBar(tab: Int, activeJobs: Int, onSelect: (Int) -> Unit) {
                                 .background(LdColors.Accent, RoundedCornerShape(8.dp)),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(item.hint, color = Color.White, fontSize = 9.sp)
+                            Text(item.hint, color = LdColors.OnAccent, fontSize = 9.sp)
                         }
                     }
                 }
                 Spacer(Modifier.height(4.dp))
                 Box(
                     Modifier
-                        .size(width = if (sel) 18.dp else 0.dp, height = 2.dp)
+                        .size(width = indicatorWidth, height = 2.dp)
                         .background(
-                            if (sel) LdColors.Accent else Color.Transparent,
+                            LdColors.Accent.copy(alpha = indicatorAlpha),
                             RoundedCornerShape(1.dp)
                         )
                 )
