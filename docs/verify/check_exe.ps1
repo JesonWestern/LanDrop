@@ -22,7 +22,7 @@ Check "体积 400KB-2.5MB" ($fi.Length -gt 400KB -and $fi.Length -lt 2.5MB) ""
 
 $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
 Check "产品名" ($vi.ProductName -like "*内网快传*") $vi.ProductName
-Check "版本 1.1.0.0" ($vi.FileVersion -eq "1.1.0.0") $vi.FileVersion
+Check "版本 1.3.0.0" ($vi.FileVersion -eq "1.3.0.0") $vi.FileVersion
 Check "描述包含局域网" ($vi.FileDescription -like "*局域网*") $vi.FileDescription
 
 $bytes = [System.IO.File]::ReadAllBytes($exe)
@@ -40,3 +40,4 @@ Check "内嵌图标(id=101)" ($text.Contains("app.ico") -or $bytes.Length -gt 0)
 if ($fails -gt 0) { Write-Host "`n失败 $fails 项" -ForegroundColor Red; exit 1 }
 Write-Host "`n全部通过" -ForegroundColor Green
 exit 0
+

@@ -2,7 +2,7 @@
 # 用法（管理员）: powershell -ExecutionPolicy Bypass -File docs\verify\check_upgrade.ps1
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$setup = Join-Path $root "win\dist\LanDropSetup-1.1.0.exe"
+$setup = Join-Path $root "win\dist\LanDropSetup-1.3.0.exe"
 $cfgDir = Join-Path $env:APPDATA "LanDrop"
 $cfg = Join-Path $cfgDir "config.ini"
 
@@ -56,3 +56,4 @@ if (Test-Path $unins) {
 if ($fails -gt 0) { Write-Host "`n失败 $fails 项" -ForegroundColor Red; exit 1 }
 Write-Host "`n全部通过" -ForegroundColor Green
 exit 0
+

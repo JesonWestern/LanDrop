@@ -27,7 +27,7 @@ Windows ⇄ Android / Android ⇄ Android 局域网文件互传 + 双端网速�
 ```bat
 :: Windows（需要 MinGW-w64 g++ 与 Inno Setup 6）
 win\build\build.bat        :: -> win\build\out\LanDrop.exe
-win\build\package.bat      :: -> win\dist\LanDropSetup-1.1.0.exe
+win\build\package.bat      :: -> win\dist\LanDropSetup-1.3.0.exe
 ```
 
 ```bash
@@ -41,6 +41,10 @@ python tools/android_unit_test.py
 
 # Android 交付门禁：版本号 / 签名 / FileProvider / queries / 权限 / SHA-256
 powershell -NoProfile -ExecutionPolicy Bypass -File docs\verify\check_apk.ps1
+
+# 真机 UI 验收（选择/页签/三视图截图 + 像素断言）与主题验收
+python tools/android_ui_shots.py            # 选择能力 + 页签/视图截图
+python tools/android_theme_check.py         # 主题切换 + 持久化（读 shared_prefs 断言）
 ```
 
 > `tools/android_unit_test.py` 的存在原因：本项目路径含中文（`内网传输`）。Gradle 9.4.1
@@ -51,7 +55,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs\verify\check_apk.ps1
 ## 自测
 
 ```bat
-win\build\out\LanDrop.exe --selftest      :: 协议编解码断言
+win\build\out\LanDrop.exe --selftest      :: 协议编解码 + 主题断言
+win\build\out\LanDrop.exe --version       :: 版本与协议号
+win\build\out\LanDrop.exe --dpi 144       :: 强制 DPI（仅测试用，不写配置）
 win\build\out\LanDrop.exe --discover --secs 5
 win\build\out\LanDrop.exe --serve --dir D:\recv
 win\build\out\LanDrop.exe --send 192.168.5.3 D:\some\folder
@@ -98,4 +104,24 @@ python tools/e2e_test.py --win-ip 192.168.5.4
 | 索引新鲜度 | 接收完成主动让分类缓存失效，并同时观察 Images/Video/Audio/Downloads；分类页 15 秒 TTL |
 
 版本 `1.2.0`（`versionCode 3`），签名与 1.0/1.1 相同，可直接覆盖安装。协议仍为 `v1`，Windows 端未改动。
+
+## 1.3 新增（2026-11-23，双端同步）— 文件页体验 · 主题 · 动画
+
+| 能力 | 说明 |
+|---|---|
+| 文件页页签 | 顶部左侧「最近 / 内部存储」两个页签；最近文件上限 12 → **200** 条 |
+| 最近按日期分组 | 今天 / 昨天 / `M月d日`（跨年补年份），段内按修改时间倒序 |
+| 三种视图 | 列表（60dp + 副标题）/ 紧凑（44dp）/ 网格（3 列 96dp 缩略图）；切换即持久化；网格不做拖选 |
+| 拖动取消选中 | 同一手势按锚点状态自选方向：锚点已选中 → 本次拖动**取消**，否则选中；区间从基线重算，拖回即还原 |
+| 全选 / 反选 / 清空 | 发送条常驻四个操作，**多选态常驻**（清空后条子不消失），作用域 = 当前页签可见行 |
+| 切换零等待 | `FileRepo` TTL 缓存 + 启动预热；首帧同步读缓存，`LanDropPerf` 实测 4 次切换全部 `cached=true`（206–626ms） |
+| 主题系统（双端同套） | **10 预设**（石墨灰=默认 / 纯黑 / 纯白 / 银灰 / 深海蓝 / 松林绿 / 落日橙 / 夜紫 / 玫瑰紫 / 薄荷青）+ **12 强调色**；强调色派生 `onAccent`，浅色主题不出现白底白字 |
+| 自定义背景 | 换背景图 + 0–80% 暗化强度；Android 降采样 ≤1440px 存私有目录，Windows 存路径 + DIB 缓存 |
+| 集成进设置 | 两端设置页均新增**置顶「外观」分组**，改动即时生效并持久化 |
+| 页面切换动画 | 180ms 方向感 slide+fade；系统/设置关闭动画时自动退化为瞬时切换；窄窗口/DPI 变化不溢出 |
+| 兼容性修复 | Windows 800×600 布局重叠（左栏动态收缩 + 顶栏按余量省略 IP + 「清除已完成」按间隙显隐） |
+
+版本 `1.3.0`（Android `versionCode 4` / Windows `1.3.0.0`），签名未变，可直接覆盖安装。
+协议仍为 `v1`：UDP 47820 发现、TCP 47821 传输、断点续传全部未改动（e2e 6/6 通过即回归证明）。
+验收证据见 `docs/verify/screenshots-1.3.0/` 与 `docs/verify/{unit-tests,e2e,check-apk}-1.3.0.log`。
 
