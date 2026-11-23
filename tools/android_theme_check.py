@@ -49,8 +49,24 @@ def shot(name):
 
 
 def prefs():
+    """读应用私有 prefs。
+
+    ⚠️ 只有 **debug 变体** 能用 run-as；release 包是 `package not debuggable`，
+    此时 run-as 直接报错、stdout 为空，脚本会读不到 themePreset 而误判"没写进去"。
+    这不是功能问题——同一个包用像素断言照样能验证主题生效。
+    所以：不是 debuggable 就返回空串，让上层自动退化为纯像素断言。
+    """
     r = adb("shell", "run-as", PKG, "cat", "shared_prefs/landrop.xml")
-    return r.stdout
+    out = r.stdout or ""
+    if "package not debuggable" in (r.stderr or "") or "not debuggable" in out:
+        return ""
+    return out
+
+
+def is_debuggable():
+    """当前安装的包是否允许 run-as（即 debug 变体）。"""
+    r = adb("shell", "run-as", PKG, "ls")
+    return "not debuggable" not in ((r.stderr or "") + (r.stdout or ""))
 
 
 def launch():
@@ -105,7 +121,11 @@ def main():
     # ---- 1. 切到纯白（idx=2）----
     pick(PRESET_IDS.index("white"))
     shot("31-theme-white.png")
-    check("themePreset=white 写入 shared_prefs", preset_value() == "white", f"value={preset_value()}")
+    # prefs 断言只在 debug 包上有效（release 包 run-as 不可用，见 prefs() 注释）；
+    # release 包退化为纯像素断言（下方 light_px 断言本身就是硬证据）。
+    debug_ok = is_debuggable()
+    check("themePreset=white 写入 shared_prefs", preset_value() == "white",
+          f"value={preset_value()} (debug={debug_ok})")
 
     im2 = Image.open(os.path.join(OUT, "31-theme-white.png")).convert("RGB")
     px2 = im2.load()
