@@ -125,3 +125,13 @@ python tools/e2e_test.py --win-ip 192.168.5.4
 协议仍为 `v1`：UDP 47820 发现、TCP 47821 传输、断点续传全部未改动（e2e 6/6 通过即回归证明）。
 验收证据见 `docs/verify/{unit-tests,e2e,check-apk}-1.3.0.log`（真机截图体积较大，未纳入仓库）。
 
+## 许可证
+
+本项目采用 **PolyForm Noncommercial License 1.0.0**（SPDX：`PolyForm-Noncommercial-1.0.0`），**禁止任何商业用途**。完整条款见 [LICENSE](LICENSE)。
+
+- **允许**：个人学习、研究、实验、私人娱乐与业余项目；慈善组织、教育机构、公共科研机构、公共安全/卫生机构、环保组织、政府机构的非商业使用；可修改并再分发（须附带许可证全文或链接及 `Required Notice`）。
+- **禁止**：任何以商业获利为目的的使用、集成、分发，包括在营利公司内部用于其商业业务。
+- **商业授权**：如需商用，请通过 GitHub Issues 或 `sihuo0596@gmail.com` 联系作者单独授权。
+
+Copyright (c) 2026 zhouyanyan（https://github.com/JesonWestern/LanDrop）
+
