@@ -123,5 +123,5 @@ python tools/e2e_test.py --win-ip 192.168.5.4
 
 版本 `1.3.0`（Android `versionCode 4` / Windows `1.3.0.0`），签名未变，可直接覆盖安装。
 协议仍为 `v1`：UDP 47820 发现、TCP 47821 传输、断点续传全部未改动（e2e 6/6 通过即回归证明）。
-验收证据见 `docs/verify/screenshots-1.3.0/` 与 `docs/verify/{unit-tests,e2e,check-apk}-1.3.0.log`。
+验收证据见 `docs/verify/{unit-tests,e2e,check-apk}-1.3.0.log`（真机截图体积较大，未纳入仓库）。
 
